@@ -1,0 +1,11 @@
+## Interface: 30300
+## Title: Skill Level UI
+## Notes: Shows custom skill levels and scaled damage for the skill-leveling realm.
+## Author: v2 realm
+## Version: 1.0
+## SavedVariablesPerCharacter: SkillLevelUIDB, SkillLevelUIOL
+
+SkillLevelUI_Data.lua
+SkillLevelUI.lua
+SkillLevelUI_Auras.lua
+SkillLevelUI_Affix.lua

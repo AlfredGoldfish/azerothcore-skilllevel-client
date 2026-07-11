@@ -1,0 +1,6 @@
+## Interface: 30300
+## Title: Skill Trainer UI |cff33ff99(levels, not ranks)|r
+## Notes: Reworks the class trainer window into a skill-level upgrade shop.
+## Author: skill-leveling-overhaul
+## SavedVariables: SkillTrainerUIDB
+SkillTrainerUI.lua

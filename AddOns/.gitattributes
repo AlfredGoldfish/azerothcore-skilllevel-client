@@ -1,0 +1,11 @@
+# Client-addon binary assets: never apply text / EOL (CRLF<->LF) conversion.
+# autocrlf=true was corrupting .blp textures (stripping 0x0D bytes).
+*.blp binary
+*.tga binary
+*.ttf binary
+*.otf binary
+*.ogg binary
+*.mp3 binary
+*.wav binary
+*.m2  binary
+*.mdx binary

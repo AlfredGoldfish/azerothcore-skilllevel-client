@@ -1,0 +1,8 @@
+## Interface: 30300
+## Title: Server Bags |cff33ff99(Sell-all + Lock)|r
+## Notes: Bagnon companion: one-click Sell-all-by-quality at vendors + Alt+click item lock (protected from Sell-all)
+## Author: v2 server
+## Version: 1.0
+## OptionalDeps: Bagnon
+## SavedVariablesPerCharacter: ServerBagsDB, QuickBagsDB
+ServerBags.lua

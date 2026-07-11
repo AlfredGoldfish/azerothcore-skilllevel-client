@@ -1,0 +1,7 @@
+## Interface: 30300
+## Title: SkillTest |cff33ff99(milestone combat logger)|r
+## Notes: Logs the Hunter test-skills' combat events to verify skill-leveling mechanics fire.
+## Author: skill-leveling-overhaul
+## SavedVariables: SkillTestDB
+SkillTest_Names.lua
+SkillTest.lua

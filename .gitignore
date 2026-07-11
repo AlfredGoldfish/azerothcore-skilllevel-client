@@ -1,0 +1,4 @@
+# local/user junk — nothing machine-specific belongs in this repo
+Thumbs.db
+desktop.ini
+*.log
