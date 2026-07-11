@@ -1,0 +1,6 @@
+# Custom client patches / assets are BINARY.
+# Never let git's autocrlf or text conversion touch them — it corrupts MPQ/BLP/DBC.
+*.MPQ binary
+*.mpq binary
+*.blp binary
+*.dbc binary

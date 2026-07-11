@@ -130,6 +130,16 @@ function Update-AddOns {
         Get-ChildItem -Path $src -Directory | ForEach-Object {
           Copy-Item -Path $_.FullName -Destination $dst -Recurse -Force
         }
+        # install custom client patches (small custom MPQs) into Data\
+        $patchSrc = Join-Path $pkg.FullName 'Patches'
+        if (Test-Path $patchSrc) {
+          $dataDst = Join-Path $cfg.WowPath 'Data'
+          if (Test-Path $dataDst) {
+            Get-ChildItem -Path $patchSrc -File | ForEach-Object {
+              Copy-Item -Path $_.FullName -Destination $dataDst -Force
+            }
+          }
+        }
         if ($latest) { $cfg.LastSha = $latest; Save-Config $cfg }
         $bar.Value = 80; Set-Status 'Add-ons updated.' $green
       } else {
