@@ -234,6 +234,62 @@ local function SellQuality(q)
     end
 end
 
+----------------------------------------------------------------- bulk disenchant (server does the DE; we just supply the lock set)
+local DE_PREFIX = "PROFDE"
+
+-- entries currently in bags that are locked, so the server knows what to skip
+local function LockedEntriesInBags()
+    local seen, csv = {}, {}
+    for _, bag in ipairs(BAGS) do
+        local n = GetContainerNumSlots(bag) or 0
+        for slot = 1, n do
+            local id = ItemIDFromLink(GetContainerItemLink(bag, slot))
+            if id and IsLockedID(id) and not seen[id] then
+                seen[id] = true; csv[#csv + 1] = id
+            end
+        end
+    end
+    return table.concat(csv, ",")
+end
+
+-- rough client count of disenchant candidates: green+ equippable gear, unlocked
+-- (the server is authoritative — it only DEs items with a real DisenchantID)
+local function CountDECandidates()
+    local c = 0
+    for _, bag in ipairs(BAGS) do
+        local n = GetContainerNumSlots(bag) or 0
+        for slot = 1, n do
+            local link = GetContainerItemLink(bag, slot)
+            if link then
+                local _, _, quality, _, _, _, _, _, equipSlot = GetItemInfo(link)
+                local isGear = equipSlot and equipSlot ~= "" and equipSlot ~= "INVTYPE_BAG"
+                if quality and quality >= 2 and quality <= 4 and isGear and not IsLockedLink(link) then
+                    c = c + 1
+                end
+            end
+        end
+    end
+    return c
+end
+
+StaticPopupDialogs["SERVERBAGS_DE_CONFIRM"] = {
+    text = "Disenchant %d unlocked green+ item(s)?\n|cff888888(server skips locked and non-disenchantable)|r",
+    button1 = YES, button2 = NO,
+    OnAccept = function()
+        SendAddonMessage(DE_PREFIX, "DE|" .. LockedEntriesInBags(), "WHISPER", UnitName("player"))
+    end,
+    timeout = 0, whileDead = true, hideOnEscape = true, preferredIndex = 3,
+}
+
+local function DisenchantAll()
+    local c = CountDECandidates()
+    if c == 0 then
+        DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99ServerBags|r no unlocked green+ gear to disenchant.")
+        return
+    end
+    StaticPopup_Show("SERVERBAGS_DE_CONFIRM", c)
+end
+
 ----------------------------------------------------------------- merchant "Sell all" bar (shows at a vendor)
 local bar, barButtons
 local function BuildBar()
@@ -342,8 +398,10 @@ SlashCmdList["SERVERBAGS"] = function(msg)
         ServerBagsDB.quiet = not ServerBagsDB.quiet
         DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99ServerBags|r chat messages: "
             .. (ServerBagsDB.quiet and "|cffff5555OFF|r" or "|cff33ff99ON|r"))
+    elseif msg == "de" then
+        DisenchantAll()
     else
-        DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99ServerBags|r commands: |cffffffff/sbags locks|r (list), |cffffffff/sbags unlockall|r, |cffffffff/sbags quiet|r (chat on/off). Sell-all buttons appear next to a vendor. |cffffd100Alt+click|r an item to lock it.")
+        DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99ServerBags|r commands: |cffffffff/sbags locks|r (list), |cffffffff/sbags unlockall|r, |cffffffff/sbags de|r (disenchant all unlocked green+), |cffffffff/sbags quiet|r (chat on/off). Sell-all buttons appear next to a vendor. |cffffd100Alt+click|r an item to lock it.")
     end
 end
 
