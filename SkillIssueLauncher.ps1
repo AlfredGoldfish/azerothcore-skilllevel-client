@@ -9,7 +9,7 @@ $ErrorActionPreference = 'Stop'
 $ScriptPath = $PSCommandPath                          # full path of THIS script (for self-update)
 
 # ---- CONFIG (edit these if they ever change) ----
-$LauncherVersion = 8                                  # BUMP THIS every time you change this script,
+$LauncherVersion = 9                                  # BUMP THIS every time you change this script,
                                                       # so everyone's launcher self-updates on next open.
 $RepoOwner = 'AlfredGoldfish'
 $RepoName  = 'azerothcore-skilllevel-client'
@@ -38,6 +38,19 @@ $InstallName = 'WoW-3.3.5a-SkillIssue'              # folder created inside the 
 # the player never touches a torrent client; HTTP mirrors above remain the fallback.
 $ClientMagnet = 'magnet:?xt=urn:btih:2ba2833baf733ce0a16040d43ed09491f2bf2ab2&dn=ChromieCraft_3.3.5a.zip&tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A80%2Fannounce&tr=http%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce&tr=udp%3A%2F%2Ftracker.uw0.xyz%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.zerobytes.xyz%3A1337%2Fannounce'
 $Aria2Url     = "$RawBase/aria2c.exe"               # standalone downloader, fetched + cached on first use
+
+# HD graphics, split into mix-and-match categories. Each ships as one single-char patch MPQ
+# (3.3.5a only auto-loads single-letter patch names) served from Josh's always-on PC over
+# Tailscale. Checking a category downloads its Patch-<letter>.MPQ into Data\; unchecking removes it.
+$HdServeUrl   = "http://$ServerIP`:8778"            # scripts\serve-hd.ps1 on Josh's PC serves D:\hd-split
+$HdCategories = @(
+  [pscustomobject]@{ Key = 'players';     Letter = 'H'; Label = 'Player characters';           Size = '~480 MB' },
+  [pscustomobject]@{ Key = 'gear';        Letter = 'G'; Label = 'Gear (armor & weapons)';       Size = '~70 MB'  },
+  [pscustomobject]@{ Key = 'worldnpcs';   Letter = 'X'; Label = 'World NPCs (townsfolk skins)'; Size = '~1.5 GB' },
+  [pscustomobject]@{ Key = 'creatures';   Letter = 'F'; Label = 'Creatures / monsters';         Size = '~730 MB' },
+  [pscustomobject]@{ Key = 'environment'; Letter = 'T'; Label = 'Environment (world & dungeons)'; Size = '~390 MB' },
+  [pscustomobject]@{ Key = 'spells';      Letter = 'S'; Label = 'Spell effects';                Size = '~10 MB'  }
+)
 # -------------------------------------------------
 
 $ZipUrl  = "https://github.com/$RepoOwner/$RepoName/archive/refs/heads/$Branch.zip"
@@ -61,6 +74,7 @@ function Load-Config {
   if (-not $c.PSObject.Properties['WowPath'])           { $c | Add-Member -NotePropertyName WowPath -NotePropertyValue '' -Force }
   if (-not $c.PSObject.Properties['LastSha'])           { $c | Add-Member -NotePropertyName LastSha -NotePropertyValue '' -Force }
   if (-not $c.PSObject.Properties['HideDownloadOffer'])  { $c | Add-Member -NotePropertyName HideDownloadOffer -NotePropertyValue $false -Force }
+  if (-not $c.PSObject.Properties['HdCategories'])       { $c | Add-Member -NotePropertyName HdCategories -NotePropertyValue @() -Force }
   return $c
 }
 function Save-Config($c) {
@@ -245,31 +259,98 @@ function Extract-Zip($zip, $dest, $label) {
 }
 
 # Download + extract the HD graphics patch into <wowPath>\Data
-function Install-HdPatch($wowPath) {
-  $dl = Join-Path $env:TEMP 'sil_hd'
-  if (-not (Test-Path $dl)) { New-Item -ItemType Directory -Path $dl -Force | Out-Null }
-  $zip = Join-Path $dl 'additional_patches_for_335a.zip'
-  Set-Status 'Downloading HD graphics patch (~3.2 GB)...' $amber
-  if (-not (Download-File $HdUrls $zip $HdBytes 'HD patch')) { Set-Status 'HD patch download failed (skipped - the game still works without it).' $amber; return $false }
-  $ex = Join-Path $dl 'x'
-  if (Test-Path $ex) { Remove-Item $ex -Recurse -Force -ErrorAction SilentlyContinue }
-  if (-not (Extract-Zip $zip $ex 'HD patch')) { return $false }
-  $dataDst = Join-Path $wowPath 'Data'
-  if (-not (Test-Path $dataDst)) { New-Item -ItemType Directory -Path $dataDst -Force | Out-Null }
-  Set-Status 'Installing HD graphics patch...' $amber
-  # The archive may hold a Data\ folder or loose .MPQ files - handle both.
-  $dataSrc = Get-ChildItem -Path $ex -Directory -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.Name -ieq 'Data' } | Select-Object -First 1
-  if ($dataSrc) {
-    robocopy $dataSrc.FullName $dataDst /E /NFL /NDL /NJH /NJS /NP | Out-Null
-    if ($LASTEXITCODE -ge 8) { Set-Status 'HD patch copy hit an error (skipped).' $amber; return $false } else { $global:LASTEXITCODE = 0 }
-  } else {
-    $mpqs = Get-ChildItem -Path $ex -Recurse -File -Filter '*.MPQ' -ErrorAction SilentlyContinue
-    if (-not $mpqs) { Set-Status 'HD patch package looked empty (skipped).' $amber; return $false }
-    $mpqs | ForEach-Object { Copy-Item $_.FullName -Destination $dataDst -Force }
+# HTTP Content-Length for a URL (for the progress bar). 0 if unknown.
+function Get-RemoteSize($url) {
+  $curl = Get-CurlExe
+  if (-not $curl) { return 0 }
+  try {
+    $out = & $curl -sIL --max-time 15 $url 2>$null
+    $m = ($out | Select-String -Pattern '(?i)Content-Length:\s*(\d+)' | Select-Object -Last 1)
+    if ($m) { return [long]$m.Matches[0].Groups[1].Value }
+  } catch {}
+  return 0
+}
+
+# Make the client's installed HD categories match $desiredKeys: download the newly-checked
+# Patch-<letter>.MPQ files (from Josh's Tailscale server) and delete the unchecked ones. Also
+# clears any old *mixed* HD MPQ sitting at a letter we're (re)installing or removing.
+function Apply-HdCategories($wowPath, $desiredKeys) {
+  if (-not (Test-WowFolder $wowPath)) { return }
+  $dataDir = Join-Path $wowPath 'Data'
+  if (-not (Test-Path $dataDir)) { New-Item -ItemType Directory -Path $dataDir -Force | Out-Null }
+  $have = @($cfg.HdCategories)
+  foreach ($c in $HdCategories) {
+    $dest = Join-Path $dataDir ("Patch-{0}.MPQ" -f $c.Letter)
+    $want = $desiredKeys -contains $c.Key
+    $installed = ($have -contains $c.Key) -and (Test-Path $dest)
+    if ($want -and -not $installed) {
+      if (Test-Path $dest) { Remove-Item $dest -Force -ErrorAction SilentlyContinue }   # clear any old mixed file
+      $url  = "$HdServeUrl/Patch-$($c.Letter).MPQ"
+      $part = "$dest.part"
+      $size = Get-RemoteSize $url
+      Set-Status ("Downloading HD: $($c.Label) ($($c.Size))...") $amber
+      if (Download-File @($url) $part $size ("HD - " + $c.Label)) {
+        try { if (Test-Path $dest) { Remove-Item $dest -Force }; Move-Item $part $dest -Force } catch {}
+      } else {
+        Set-Status ("HD '$($c.Label)' download failed - is Josh's PC on? Skipped.") $amber
+        Remove-Item $part -Force -ErrorAction SilentlyContinue
+      }
+    } elseif (-not $want) {
+      if (Test-Path $dest) { Remove-Item $dest -Force -ErrorAction SilentlyContinue }
+    }
   }
-  try { Remove-Item $zip -Force -ErrorAction SilentlyContinue; Remove-Item $ex -Recurse -Force -ErrorAction SilentlyContinue } catch {}
-  Set-Status 'HD graphics patch installed.' $green
-  return $true
+  $cfg.HdCategories = @($desiredKeys); Save-Config $cfg
+  Set-Status 'HD graphics updated.' $green
+}
+
+# Modal: a checkbox per HD category (pre-checked to what's installed). Returns the chosen keys
+# (array, possibly empty) or $null if cancelled.
+function Show-HdCategories {
+  $d = New-Object System.Windows.Forms.Form
+  $d.Text = 'HD graphics - choose parts'
+  $d.Size = New-Object System.Drawing.Size(430, 350)
+  $d.StartPosition = 'CenterParent'; $d.FormBorderStyle = 'FixedDialog'
+  $d.MaximizeBox = $false; $d.MinimizeBox = $false
+  $d.BackColor = [System.Drawing.Color]::FromArgb(24, 26, 32)
+
+  $lbl = New-Object System.Windows.Forms.Label
+  $lbl.Text = "Tick the HD parts you want. Ticked = installed, unticked = removed. Downloads from Josh's PC over Tailscale."
+  $lbl.ForeColor = [System.Drawing.Color]::Gainsboro
+  $lbl.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+  $lbl.Location = New-Object System.Drawing.Point(18, 12); $lbl.Size = New-Object System.Drawing.Size(390, 44)
+  $d.Controls.Add($lbl)
+
+  $have = @($cfg.HdCategories)
+  $boxes = @()
+  $y = 62
+  foreach ($c in $HdCategories) {
+    $cb = New-Object System.Windows.Forms.CheckBox
+    $cb.Text = ("{0}   ({1})" -f $c.Label, $c.Size)
+    $cb.ForeColor = [System.Drawing.Color]::Gainsboro
+    $cb.Font = New-Object System.Drawing.Font('Segoe UI', 9.5)
+    $cb.Location = New-Object System.Drawing.Point(22, $y); $cb.Size = New-Object System.Drawing.Size(380, 24)
+    $cb.Checked = ($have -contains $c.Key)
+    $cb.Tag = $c.Key
+    $d.Controls.Add($cb); $boxes += $cb
+    $y += 30
+  }
+
+  $ok = New-Object System.Windows.Forms.Button
+  $ok.Text = 'Apply'; $ok.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
+  $ok.Size = New-Object System.Drawing.Size(180, 34); $ok.Location = New-Object System.Drawing.Point(22, ($y + 8))
+  $ok.BackColor = [System.Drawing.Color]::FromArgb(64, 130, 82); $ok.ForeColor = [System.Drawing.Color]::White; $ok.FlatStyle = 'Flat'
+  $d.Controls.Add($ok)
+  $cancel = New-Object System.Windows.Forms.Button
+  $cancel.Text = 'Cancel'; $cancel.Font = New-Object System.Drawing.Font('Segoe UI', 9.5)
+  $cancel.Size = New-Object System.Drawing.Size(120, 34); $cancel.Location = New-Object System.Drawing.Point(212, ($y + 8))
+  $cancel.BackColor = [System.Drawing.Color]::FromArgb(48, 52, 62); $cancel.ForeColor = [System.Drawing.Color]::Gainsboro; $cancel.FlatStyle = 'Flat'
+  $d.Controls.Add($cancel)
+
+  $script:__hdResult = $null
+  $ok.Add_Click({ $script:__hdResult = @($boxes | Where-Object { $_.Checked } | ForEach-Object { [string]$_.Tag }); $d.Close() })
+  $cancel.Add_Click({ $script:__hdResult = $null; $d.Close() })
+  [void]$d.ShowDialog()
+  return $script:__hdResult
 }
 
 # Fetch + cache aria2c.exe (the headless torrent/multi-connection downloader). One-time ~5 MB.
@@ -361,7 +442,7 @@ function Install-Client($parent, $installHd) {
   if (-not $wowExe) { Set-Status 'Downloaded, but Wow.exe was not found in the package.' $red; return $null }
   $wowPath = Split-Path $wowExe.FullName -Parent
   try { Remove-Item $zip -Force -ErrorAction SilentlyContinue } catch {}   # reclaim ~16.5 GB
-  if ($installHd) { Install-HdPatch $wowPath | Out-Null }
+  if ($installHd) { $keys = Show-HdCategories; if ($null -ne $keys) { Apply-HdCategories $wowPath $keys } }
   return $wowPath
 }
 
@@ -409,7 +490,7 @@ function Show-SetupChoice {
   $d.Controls.Add($bHave)
 
   $chk = New-Object System.Windows.Forms.CheckBox
-  $chk.Text = 'Also install the HD graphics patch  (+3.2 GB, sharper textures)'
+  $chk.Text = 'Add HD graphics (pick which parts next)'
   $chk.ForeColor = [System.Drawing.Color]::Gainsboro
   $chk.Font = New-Object System.Drawing.Font('Segoe UI', 9)
   $chk.Location = New-Object System.Drawing.Point(22, 184)
@@ -477,7 +558,7 @@ function Apply-SetupChoice($choice) {
     $p = Pick-WowFolder
     if (-not (Test-WowFolder $p)) { Set-Status 'That folder has no Wow.exe. Close and re-open to try again.' $red; return $false }
     $cfg.WowPath = $p; Save-Config $cfg
-    if ($choice.Hd) { Install-HdPatch $cfg.WowPath | Out-Null }
+    if ($choice.Hd) { $keys = Show-HdCategories; if ($null -ne $keys) { Apply-HdCategories $cfg.WowPath $keys } }
     return $true
   } elseif ($choice.Action -eq 'download') {
     Set-Status 'Choose where to install the game...' $amber
@@ -582,7 +663,7 @@ $dlLink.Visible = $true
 $form.Controls.Add($dlLink)
 
 $hdLink = New-Object System.Windows.Forms.LinkLabel
-$hdLink.Text = 'Install HD graphics patch (+3.2 GB)'
+$hdLink.Text = 'HD graphics - choose parts...'
 $hdLink.LinkColor = [System.Drawing.Color]::FromArgb(120,180,255)
 $hdLink.Font = New-Object System.Drawing.Font('Segoe UI', 9)
 $hdLink.AutoSize = $true
@@ -738,8 +819,10 @@ function Update-Content {
 $link.Add_LinkClicked({ if ($link.Tag) { try { Start-Process ([string]$link.Tag) } catch {} } })
 $hdLink.Add_LinkClicked({
   if (-not (Test-WowFolder $cfg.WowPath)) { Set-Status 'Set up your game folder first (hit PLAY once).' $amber; return }
+  $keys = Show-HdCategories
+  if ($null -eq $keys) { return }   # cancelled
   $playBtn.Enabled = $false; $hdLink.Enabled = $false
-  try { Install-HdPatch $cfg.WowPath | Out-Null } catch { Set-Status ('HD patch error: ' + $_.Exception.Message) $red }
+  try { Apply-HdCategories $cfg.WowPath $keys } catch { Set-Status ('HD error: ' + $_.Exception.Message) $red }
   $bar.Value = 100; $playBtn.Enabled = $true; $hdLink.Enabled = $true
 })
 $dlLink.Add_LinkClicked({
