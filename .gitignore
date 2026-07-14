@@ -2,3 +2,5 @@
 Thumbs.db
 desktop.ini
 *.log
+*.bak
+_sil_download/

@@ -10,10 +10,22 @@ the custom UI add-ons and the launcher, **not** the multi-GB game client.
 - `Play.bat` — double-click this to run the launcher.
 
 ## First-time setup
-1. Get the **WoW 3.3.5a game folder** from Josh (one-time; e.g. sent over Tailscale). This is the big part.
-2. Make sure **Tailscale** is installed and connected (see the separate connect guide).
-3. Put this launcher folder anywhere handy and double-click **`Play.bat`**.
-4. On first run it asks for your WoW folder (the one with `Wow.exe`) — pick it once; it remembers.
+You **don't need to source a game client yourself** — the launcher can download a
+complete, correct one for you.
+
+1. Make sure **Tailscale** is installed and connected (see the separate connect guide).
+2. Put this launcher folder anywhere handy and double-click **`Play.bat`**.
+3. On first run it asks about the game:
+   - **Download & install the game for me (~16.5 GB)** — grabs a complete ChromieCraft
+     3.3.5a client (build 12340, all runtime DLLs included), so there's nothing to copy
+     from Josh and no missing-`.dll` errors. Optional **HD graphics patch** checkbox
+     (+3.2 GB). The download **resumes** if it's interrupted or you close the launcher.
+   - **I already have WoW 3.3.5a** — pick your folder (the one with `Wow.exe`) instead.
+
+   It remembers your choice; after that it just updates add-ons and launches.
+
+> Already have a client but want the sharper textures later? Open the launcher and click
+> **Install HD graphics patch** on the main window.
 
 ## Every time after that
 Just double-click **`Play.bat`**. It will:

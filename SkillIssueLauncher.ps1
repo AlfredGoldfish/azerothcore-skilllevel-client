@@ -6,13 +6,31 @@
 
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$ScriptPath = $PSCommandPath                          # full path of THIS script (for self-update)
 
 # ---- CONFIG (edit these if they ever change) ----
+$LauncherVersion = 2                                  # BUMP THIS every time you change this script,
+                                                      # so everyone's launcher self-updates on next open.
 $RepoOwner = 'AlfredGoldfish'
 $RepoName  = 'azerothcore-skilllevel-client'
 $Branch    = 'main'
 $ServerIP  = '100.109.250.55'                       # Josh's PC on Tailscale = where the server lives
 $RealmName = "It's a Skill issue Mikey"
+
+# Full 3.3.5a (build 12340) client + optional HD patch, hosted by ChromieCraft.
+# The host uses hotlink protection: it 403s unless we send a browser User-Agent AND
+# a chromiecraft.com Referer. Both support byte-range resume.
+# The canonical URL 302-redirects to the chmi.* host; we try both (canonical first,
+# direct as fallback) so a redirect hiccup can't strand the download.
+$ClientUrls  = @('https://btground.dedyn.io/chmi/ChromieCraft_3.3.5a.zip',
+                 'https://chmi.btground.dedyn.io/ChromieCraft_3.3.5a.zip')
+$ClientBytes = 17674749792                          # ~16.5 GB
+$HdUrls      = @('https://btground.dedyn.io/chmi/additional_patches_for_335a.zip',
+                 'https://chmi.btground.dedyn.io/additional_patches_for_335a.zip')
+$HdBytes     = 3397498676                           # ~3.2 GB
+$BrowserUA   = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+$Referer     = 'https://chromiecraft.com/'
+$InstallName = 'WoW-3.3.5a-SkillIssue'              # folder created inside the parent the user picks
 # -------------------------------------------------
 
 $ZipUrl  = "https://github.com/$RepoOwner/$RepoName/archive/refs/heads/$Branch.zip"
@@ -63,13 +81,285 @@ function Sleep-Pump($ms) {
   while ((Get-Date) -lt $end) { [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 80 }
 }
 
+# ---- Self-update: pull the latest launcher script from the repo and relaunch if newer ----
+# Pull, not push: every open, the launcher compares its own $LauncherVersion to the repo's.
+# If the repo is newer, it replaces this file and relaunches - so a change you push reaches
+# everyone automatically, with no re-sharing of the launcher folder.
+function Self-Update {
+  if (-not $ScriptPath -or -not (Test-Path $ScriptPath)) { return }   # can't self-update if we don't know our path
+  $raw = "https://raw.githubusercontent.com/$RepoOwner/$RepoName/$Branch/SkillIssueLauncher.ps1"
+  $remote = $null
+  try {
+    $remote = (Invoke-WebRequest -Uri $raw -UseBasicParsing -TimeoutSec 20 -Headers @{ 'Cache-Control' = 'no-cache' }).Content
+  } catch { return }                                                  # offline / GitHub down: run the current version
+  if (-not $remote) { return }
+
+  $m = [regex]::Match($remote, '(?m)^\s*\$LauncherVersion\s*=\s*(\d+)')
+  if (-not $m.Success) { return }                                     # remote has no version marker: don't touch it
+  $remoteVer = [int]$m.Groups[1].Value
+  if ($remoteVer -le $LauncherVersion) { return }                     # we're already current (or ahead, e.g. Josh's dev copy)
+
+  # Never replace a working launcher with a broken one: the new script must parse cleanly first.
+  $perr = $null
+  [void][System.Management.Automation.Language.Parser]::ParseInput($remote, [ref]$null, [ref]$perr)
+  if ($perr -and $perr.Count -gt 0) { return }
+
+  try {
+    Copy-Item $ScriptPath "$ScriptPath.bak" -Force -ErrorAction SilentlyContinue
+    Set-Content -Path $ScriptPath -Value $remote -Encoding UTF8
+  } catch { return }                                                  # couldn't write (locked/perms): run the current version
+
+  # Relaunch the freshly-written version and hand off. The new copy sees remoteVer==local -> no loop.
+  try {
+    Start-Process powershell -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File', $ScriptPath) | Out-Null
+    exit
+  } catch { return }
+}
+
+# ---- Client download / install helpers ----
+function Get-CurlExe {
+  $sys = Join-Path $env:SystemRoot 'System32\curl.exe'
+  if (Test-Path $sys) { return $sys }
+  $c = Get-Command curl.exe -ErrorAction SilentlyContinue
+  if ($c) { return $c.Source }
+  return $null
+}
+function Get-FreeSpaceGB($path) {
+  try {
+    $root = [System.IO.Path]::GetPathRoot($path)
+    if (-not $root) { return $null }
+    return [math]::Round((New-Object System.IO.DriveInfo $root).AvailableFreeSpace / 1GB, 1)
+  } catch { return $null }
+}
+function Fmt-Speed($bytesPerSec) {
+  if ($bytesPerSec -le 0) { return '' }
+  if ($bytesPerSec -ge 1MB) { return ('{0:N1} MB/s' -f ($bytesPerSec / 1MB)) }
+  return ('{0:N0} KB/s' -f ($bytesPerSec / 1KB))
+}
+
+# Resumable download. Uses the built-in curl.exe (handles the required headers, the
+# 302 redirect, retries, and byte-range resume); polls the growing file for the GUI bar.
+# Tries each URL in turn (resuming the same file), then falls back to WebClient if curl
+# is somehow missing (no resume, coarse progress).
+function Download-File($urls, $dest, $total, $label) {
+  if ($urls -isnot [array]) { $urls = @($urls) }
+  $dir = Split-Path $dest -Parent
+  if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+  if ($total -gt 0 -and (Test-Path $dest) -and ((Get-Item $dest).Length -eq $total)) { return $true }  # already complete
+
+  $curl = Get-CurlExe
+  if ($curl) {
+    foreach ($url in $urls) {
+      $err = Join-Path $env:TEMP ('sil_curl_' + [guid]::NewGuid().ToString('N') + '.txt')
+      $a = @('-L','-C','-','--retry','8','--retry-delay','3','--retry-all-errors','--fail','-s',
+             '-A', $BrowserUA, '-e', $Referer, '-o', $dest, $url)
+      $p = Start-Process -FilePath $curl -ArgumentList $a -PassThru -WindowStyle Hidden -RedirectStandardError $err
+      $lastLen = 0; $lastT = Get-Date
+      while (-not $p.HasExited) {
+        Sleep-Pump 600
+        $len = 0; try { $len = (Get-Item $dest -ErrorAction SilentlyContinue).Length } catch {}
+        $now = Get-Date; $dt = ($now - $lastT).TotalSeconds
+        $spd = if ($dt -gt 0.5) { ($len - $lastLen) / $dt } else { 0 }
+        if ($spd -gt 0) { $lastLen = $len; $lastT = $now }
+        if ($total -gt 0) {
+          $pct = [int](($len / $total) * 100); if ($pct -gt 100) { $pct = 100 }
+          $bar.Value = [Math]::Max(1, [Math]::Min(100, $pct))
+          Set-Status ("Downloading $label - {0:N1} / {1:N1} GB  ({2}%)   {3}`r`nOne-time download. You can leave this running; it resumes if interrupted." -f ($len/1GB), ($total/1GB), $pct, (Fmt-Speed $spd)) $amber
+        } else {
+          Set-Status ("Downloading $label - {0:N1} GB..." -f ($len/1GB)) $amber
+        }
+      }
+      $code = $p.ExitCode
+      Remove-Item $err -Force -ErrorAction SilentlyContinue
+      if ($code -eq 0) { return $true }
+      if ($total -gt 0 -and (Test-Path $dest) -and ((Get-Item $dest).Length -ge $total)) { return $true }
+      # else: try the next URL (curl already retried transient errors); keep partial for resume
+    }
+    return $false
+  }
+
+  # Fallback: WebClient (no resume; the whole file restarts on any error)
+  foreach ($url in $urls) {
+    try {
+      Set-Status "Downloading $label (this PC has no curl - no progress bar; please wait)..." $amber
+      $wc = New-Object System.Net.WebClient
+      $wc.Headers.Add('User-Agent', $BrowserUA)
+      $wc.Headers.Add('Referer', $Referer)
+      $wc.DownloadFile($url, $dest)
+      return $true
+    } catch {}
+  }
+  return $false
+}
+
+function Extract-Zip($zip, $dest, $label) {
+  try { Add-Type -AssemblyName System.IO.Compression.FileSystem } catch {}
+  if (-not (Test-Path $dest)) { New-Item -ItemType Directory -Path $dest -Force | Out-Null }
+  $z = $null
+  try {
+    $z = [System.IO.Compression.ZipFile]::OpenRead($zip)
+    $n = $z.Entries.Count; $i = 0
+    foreach ($e in $z.Entries) {
+      $i++
+      $rel = $e.FullName -replace '/', '\'
+      $out = Join-Path $dest $rel
+      if ($e.FullName.EndsWith('/')) {
+        if (-not (Test-Path $out)) { New-Item -ItemType Directory -Path $out -Force | Out-Null }
+        continue
+      }
+      $od = Split-Path $out -Parent
+      if (-not (Test-Path $od)) { New-Item -ItemType Directory -Path $od -Force | Out-Null }
+      [System.IO.Compression.ZipFileExtensions]::ExtractToFile($e, $out, $true)
+      if (($i % 25) -eq 0 -or $i -eq $n) {
+        $pct = [int](($i / [math]::Max(1,$n)) * 100)
+        $bar.Value = [Math]::Max(1, [Math]::Min(100, $pct))
+        Set-Status ("Extracting $label - $i / $n files  ($pct%)") $amber
+        [System.Windows.Forms.Application]::DoEvents()
+      }
+    }
+    return $true
+  } catch {
+    Set-Status ("Extract failed: " + $_.Exception.Message) $red
+    return $false
+  } finally { if ($z) { $z.Dispose() } }
+}
+
+# Download + extract the HD graphics patch into <wowPath>\Data
+function Install-HdPatch($wowPath) {
+  $dl = Join-Path $env:TEMP 'sil_hd'
+  if (-not (Test-Path $dl)) { New-Item -ItemType Directory -Path $dl -Force | Out-Null }
+  $zip = Join-Path $dl 'additional_patches_for_335a.zip'
+  Set-Status 'Downloading HD graphics patch (~3.2 GB)...' $amber
+  if (-not (Download-File $HdUrls $zip $HdBytes 'HD patch')) { Set-Status 'HD patch download failed (skipped - the game still works without it).' $amber; return $false }
+  $ex = Join-Path $dl 'x'
+  if (Test-Path $ex) { Remove-Item $ex -Recurse -Force -ErrorAction SilentlyContinue }
+  if (-not (Extract-Zip $zip $ex 'HD patch')) { return $false }
+  $dataDst = Join-Path $wowPath 'Data'
+  if (-not (Test-Path $dataDst)) { New-Item -ItemType Directory -Path $dataDst -Force | Out-Null }
+  Set-Status 'Installing HD graphics patch...' $amber
+  # The archive may hold a Data\ folder or loose .MPQ files - handle both.
+  $dataSrc = Get-ChildItem -Path $ex -Directory -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.Name -ieq 'Data' } | Select-Object -First 1
+  if ($dataSrc) {
+    robocopy $dataSrc.FullName $dataDst /E /NFL /NDL /NJH /NJS /NP | Out-Null
+    if ($LASTEXITCODE -ge 8) { Set-Status 'HD patch copy hit an error (skipped).' $amber; return $false } else { $global:LASTEXITCODE = 0 }
+  } else {
+    $mpqs = Get-ChildItem -Path $ex -Recurse -File -Filter '*.MPQ' -ErrorAction SilentlyContinue
+    if (-not $mpqs) { Set-Status 'HD patch package looked empty (skipped).' $amber; return $false }
+    $mpqs | ForEach-Object { Copy-Item $_.FullName -Destination $dataDst -Force }
+  }
+  try { Remove-Item $zip -Force -ErrorAction SilentlyContinue; Remove-Item $ex -Recurse -Force -ErrorAction SilentlyContinue } catch {}
+  Set-Status 'HD graphics patch installed.' $green
+  return $true
+}
+
+# Download + extract the full client into <parent>\$InstallName; returns the folder with Wow.exe (or $null)
+function Install-Client($parent, $installHd) {
+  $free = Get-FreeSpaceGB $parent
+  $needGB = if ($installHd) { 55 } else { 45 }
+  if ($free -ne $null -and $free -lt $needGB) {
+    $r = [System.Windows.Forms.MessageBox]::Show(
+      ("This install needs about $needGB GB free, but the chosen drive has only $free GB.`n`nContinue anyway?"),
+      'Low disk space', [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Warning)
+    if ($r -ne [System.Windows.Forms.DialogResult]::Yes) { Set-Status 'Install cancelled (low disk space).' $amber; return $null }
+  }
+  $target = Join-Path $parent $InstallName
+  if (-not (Test-Path $target)) { New-Item -ItemType Directory -Path $target -Force | Out-Null }
+  $zip = Join-Path (Join-Path $parent '_sil_download') 'ChromieCraft_3.3.5a.zip'
+
+  Set-Status 'Starting the game download (~16.5 GB)...' $amber
+  if (-not (Download-File $ClientUrls $zip $ClientBytes 'game client')) {
+    Set-Status 'Client download failed. Re-open the launcher to resume where it left off.' $red; return $null
+  }
+  Set-Status 'Extracting the game (this takes several minutes)...' $amber
+  if (-not (Extract-Zip $zip $target 'game')) { return $null }
+
+  $wowExe = Get-ChildItem -Path $target -Filter 'Wow.exe' -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1
+  if (-not $wowExe) { Set-Status 'Downloaded, but Wow.exe was not found in the package.' $red; return $null }
+  $wowPath = Split-Path $wowExe.FullName -Parent
+  try { Remove-Item $zip -Force -ErrorAction SilentlyContinue } catch {}   # reclaim ~16.5 GB
+  if ($installHd) { Install-HdPatch $wowPath | Out-Null }
+  return $wowPath
+}
+
+function Pick-InstallParent {
+  $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
+  $dlg.Description = 'Choose a folder to install the game into (a WoW-3.3.5a-SkillIssue subfolder is created inside it)'
+  if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { return $dlg.SelectedPath }
+  return $null
+}
+
+# First-run modal: "have it / download it / cancel" + optional HD checkbox. Returns @{ Action=...; Hd=$bool }
+function Show-SetupChoice {
+  $d = New-Object System.Windows.Forms.Form
+  $d.Text = 'Set up the game'
+  $d.Size = New-Object System.Drawing.Size(460, 300)
+  $d.StartPosition = 'CenterParent'
+  $d.FormBorderStyle = 'FixedDialog'
+  $d.MaximizeBox = $false; $d.MinimizeBox = $false
+  $d.BackColor = [System.Drawing.Color]::FromArgb(24, 26, 32)
+
+  $lbl = New-Object System.Windows.Forms.Label
+  $lbl.Text = "No World of Warcraft 3.3.5a was found on this PC.`n`nWhat would you like to do?"
+  $lbl.ForeColor = [System.Drawing.Color]::Gainsboro
+  $lbl.Font = New-Object System.Drawing.Font('Segoe UI', 10)
+  $lbl.Location = New-Object System.Drawing.Point(20, 18)
+  $lbl.Size = New-Object System.Drawing.Size(410, 56)
+  $d.Controls.Add($lbl)
+
+  $bDl = New-Object System.Windows.Forms.Button
+  $bDl.Text = 'Download & install the game for me  (~16.5 GB)'
+  $bDl.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
+  $bDl.Size = New-Object System.Drawing.Size(410, 46)
+  $bDl.Location = New-Object System.Drawing.Point(20, 80)
+  $bDl.BackColor = [System.Drawing.Color]::FromArgb(64, 130, 82)
+  $bDl.ForeColor = [System.Drawing.Color]::White; $bDl.FlatStyle = 'Flat'
+  $d.Controls.Add($bDl)
+
+  $bHave = New-Object System.Windows.Forms.Button
+  $bHave.Text = 'I already have WoW 3.3.5a - let me pick the folder'
+  $bHave.Font = New-Object System.Drawing.Font('Segoe UI', 9.5)
+  $bHave.Size = New-Object System.Drawing.Size(410, 40)
+  $bHave.Location = New-Object System.Drawing.Point(20, 134)
+  $bHave.BackColor = [System.Drawing.Color]::FromArgb(48, 52, 62)
+  $bHave.ForeColor = [System.Drawing.Color]::Gainsboro; $bHave.FlatStyle = 'Flat'
+  $d.Controls.Add($bHave)
+
+  $chk = New-Object System.Windows.Forms.CheckBox
+  $chk.Text = 'Also install the HD graphics patch  (+3.2 GB, sharper textures)'
+  $chk.ForeColor = [System.Drawing.Color]::Gainsboro
+  $chk.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+  $chk.Location = New-Object System.Drawing.Point(22, 184)
+  $chk.Size = New-Object System.Drawing.Size(410, 24)
+  $d.Controls.Add($chk)
+
+  $bCancel = New-Object System.Windows.Forms.Button
+  $bCancel.Text = 'Cancel'
+  $bCancel.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+  $bCancel.Size = New-Object System.Drawing.Size(120, 30)
+  $bCancel.Location = New-Object System.Drawing.Point(20, 218)
+  $bCancel.BackColor = [System.Drawing.Color]::FromArgb(48, 52, 62)
+  $bCancel.ForeColor = [System.Drawing.Color]::Gainsboro; $bCancel.FlatStyle = 'Flat'
+  $d.Controls.Add($bCancel)
+
+  $result = @{ Action = 'cancel'; Hd = $false }
+  $bDl.Add_Click({ $script:__silChoice = 'download'; $d.Close() })
+  $bHave.Add_Click({ $script:__silChoice = 'have'; $d.Close() })
+  $bCancel.Add_Click({ $script:__silChoice = 'cancel'; $d.Close() })
+  $script:__silChoice = 'cancel'
+  [void]$d.ShowDialog()
+  return @{ Action = $script:__silChoice; Hd = $chk.Checked }
+}
+
+# Check for a newer launcher and hand off to it before we build any UI (silent, ~1s; skipped if offline).
+Self-Update
+
 $cfg = Load-Config
 $MyIP = $null
 
 # ---- UI ----
 $form = New-Object System.Windows.Forms.Form
 $form.Text = 'Skill Issue Launcher'
-$form.Size = New-Object System.Drawing.Size(500, 360)
+$form.Size = New-Object System.Drawing.Size(500, 400)
 $form.StartPosition = 'CenterScreen'
 $form.FormBorderStyle = 'FixedSingle'
 $form.MaximizeBox = $false
@@ -126,6 +416,15 @@ $playBtn.ForeColor = [System.Drawing.Color]::White
 $playBtn.FlatStyle = 'Flat'
 $playBtn.Enabled = $false
 $form.Controls.Add($playBtn)
+
+$hdLink = New-Object System.Windows.Forms.LinkLabel
+$hdLink.Text = 'Install HD graphics patch (+3.2 GB)'
+$hdLink.LinkColor = [System.Drawing.Color]::FromArgb(120,180,255)
+$hdLink.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+$hdLink.AutoSize = $true
+$hdLink.Location = New-Object System.Drawing.Point(24, 274)
+$hdLink.Visible = $false
+$form.Controls.Add($hdLink)
 
 $green = [System.Drawing.Color]::FromArgb(120, 220, 130)
 $amber = [System.Drawing.Color]::Khaki
@@ -205,10 +504,23 @@ function Test-Server { try { return (Test-Connection -ComputerName $ServerIP -Co
 # ---- Add-ons + custom patch update ----
 function Update-Content {
   if (-not (Test-WowFolder $cfg.WowPath)) {
-    Set-Status 'Choose your WoW 3.3.5a folder (the one with Wow.exe)...' $amber
-    $p = Pick-WowFolder
-    if (-not (Test-WowFolder $p)) { Set-Status 'That folder has no Wow.exe. Close and re-open to try again.' $red; return $false }
-    $cfg.WowPath = $p; Save-Config $cfg
+    $choice = Show-SetupChoice
+    if ($choice.Action -eq 'have') {
+      Set-Status 'Choose your WoW 3.3.5a folder (the one with Wow.exe)...' $amber
+      $p = Pick-WowFolder
+      if (-not (Test-WowFolder $p)) { Set-Status 'That folder has no Wow.exe. Close and re-open to try again.' $red; return $false }
+      $cfg.WowPath = $p; Save-Config $cfg
+      if ($choice.Hd) { Install-HdPatch $cfg.WowPath | Out-Null }
+    } elseif ($choice.Action -eq 'download') {
+      Set-Status 'Choose where to install the game...' $amber
+      $parent = Pick-InstallParent
+      if (-not $parent) { Set-Status 'Install cancelled. Re-open the launcher when you are ready.' $amber; return $false }
+      $wp = Install-Client $parent $choice.Hd
+      if (-not (Test-WowFolder $wp)) { Set-Status 'The client install did not finish. Re-open the launcher to resume the download.' $red; return $false }
+      $cfg.WowPath = $wp; Save-Config $cfg
+    } else {
+      Set-Status 'Setup cancelled.' $amber; return $false
+    }
   }
 
   $bar.Value = 60; Set-Status 'Checking for add-on / patch updates...'
@@ -257,6 +569,12 @@ function Update-Content {
 }
 
 $link.Add_LinkClicked({ if ($link.Tag) { try { Start-Process ([string]$link.Tag) } catch {} } })
+$hdLink.Add_LinkClicked({
+  if (-not (Test-WowFolder $cfg.WowPath)) { Set-Status 'Set up your game folder first (hit PLAY once).' $amber; return }
+  $playBtn.Enabled = $false; $hdLink.Enabled = $false
+  try { Install-HdPatch $cfg.WowPath | Out-Null } catch { Set-Status ('HD patch error: ' + $_.Exception.Message) $red }
+  $bar.Value = 100; $playBtn.Enabled = $true; $hdLink.Enabled = $true
+})
 $playBtn.Add_Click({
   $wow = Join-Path $cfg.WowPath 'Wow.exe'
   if (Test-Path $wow) { Start-Process -FilePath $wow -WorkingDirectory $cfg.WowPath; $form.Close() }
@@ -270,6 +588,7 @@ $form.Add_Shown({
       $bar.Value = 50; Set-Status 'Checking connection to the server...'
       $reach = Test-Server
       Update-Content | Out-Null
+      if (Test-WowFolder $cfg.WowPath) { $hdLink.Visible = $true }
       $bar.Value = 100
       if ($reach) {
         Set-Status "Ready. Realm: $RealmName - hit PLAY." $green
