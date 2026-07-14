@@ -9,7 +9,7 @@ $ErrorActionPreference = 'Stop'
 $ScriptPath = $PSCommandPath                          # full path of THIS script (for self-update)
 
 # ---- CONFIG (edit these if they ever change) ----
-$LauncherVersion = 4                                  # BUMP THIS every time you change this script,
+$LauncherVersion = 5                                  # BUMP THIS every time you change this script,
                                                       # so everyone's launcher self-updates on next open.
 $RepoOwner = 'AlfredGoldfish'
 $RepoName  = 'azerothcore-skilllevel-client'
@@ -54,8 +54,14 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
 function Load-Config {
-  if (Test-Path $CfgFile) { try { return (Get-Content $CfgFile -Raw | ConvertFrom-Json) } catch {} }
-  return [pscustomobject]@{ WowPath = ''; LastSha = '' }
+  $c = $null
+  if (Test-Path $CfgFile) { try { $c = (Get-Content $CfgFile -Raw | ConvertFrom-Json) } catch {} }
+  if (-not $c) { $c = [pscustomobject]@{} }
+  # Guarantee every field exists so later `$cfg.Field = x` never throws on old configs.
+  if (-not $c.PSObject.Properties['WowPath'])           { $c | Add-Member -NotePropertyName WowPath -NotePropertyValue '' -Force }
+  if (-not $c.PSObject.Properties['LastSha'])           { $c | Add-Member -NotePropertyName LastSha -NotePropertyValue '' -Force }
+  if (-not $c.PSObject.Properties['HideDownloadOffer'])  { $c | Add-Member -NotePropertyName HideDownloadOffer -NotePropertyValue $false -Force }
+  return $c
 }
 function Save-Config($c) {
   if (-not (Test-Path $CfgDir)) { New-Item -ItemType Directory -Path $CfgDir -Force | Out-Null }
@@ -88,10 +94,11 @@ function Sleep-Pump($ms) {
   while ((Get-Date) -lt $end) { [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 80 }
 }
 
-# ---- Self-update: pull the latest launcher script from the repo and relaunch if newer ----
+# ---- Self-update: pull the latest launcher script from the repo; apply on NEXT launch ----
 # Pull, not push: every open, the launcher compares its own $LauncherVersion to the repo's.
-# If the repo is newer, it replaces this file and relaunches - so a change you push reaches
-# everyone automatically, with no re-sharing of the launcher folder.
+# If the repo is newer, it overwrites this file on disk and the new version runs next open.
+# (We deliberately do NOT relaunch mid-session - spawning a fresh powershell was intermittently
+# failing to start with 0xc0000142 under desktop-heap pressure. Apply-on-next-launch is robust.)
 function Self-Update {
   if (-not $ScriptPath -or -not (Test-Path $ScriptPath)) { return }   # can't self-update if we don't know our path
   $raw = "https://raw.githubusercontent.com/$RepoOwner/$RepoName/$Branch/SkillIssueLauncher.ps1"
@@ -114,13 +121,8 @@ function Self-Update {
   try {
     Copy-Item $ScriptPath "$ScriptPath.bak" -Force -ErrorAction SilentlyContinue
     Set-Content -Path $ScriptPath -Value $remote -Encoding UTF8
-  } catch { return }                                                  # couldn't write (locked/perms): run the current version
-
-  # Relaunch the freshly-written version and hand off. The new copy sees remoteVer==local -> no loop.
-  try {
-    Start-Process powershell -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File', $ScriptPath) | Out-Null
-    exit
-  } catch { return }
+    $script:UpdatePending = $true      # new version is on disk; it runs the next time the launcher opens
+  } catch { return }                   # couldn't write (locked/perms): just run the current version
 }
 
 # ---- Client download / install helpers ----
@@ -374,7 +376,7 @@ function Pick-InstallParent {
 function Show-SetupChoice {
   $d = New-Object System.Windows.Forms.Form
   $d.Text = 'Set up the game'
-  $d.Size = New-Object System.Drawing.Size(460, 300)
+  $d.Size = New-Object System.Drawing.Size(460, 336)
   $d.StartPosition = 'CenterParent'
   $d.FormBorderStyle = 'FixedDialog'
   $d.MaximizeBox = $false; $d.MinimizeBox = $false
@@ -414,11 +416,19 @@ function Show-SetupChoice {
   $chk.Size = New-Object System.Drawing.Size(410, 24)
   $d.Controls.Add($chk)
 
+  $chkNoOffer = New-Object System.Windows.Forms.CheckBox
+  $chkNoOffer.Text = "Don't offer to download the game again (I'll use my own client)"
+  $chkNoOffer.ForeColor = [System.Drawing.Color]::FromArgb(150,160,175)
+  $chkNoOffer.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+  $chkNoOffer.Location = New-Object System.Drawing.Point(22, 212)
+  $chkNoOffer.Size = New-Object System.Drawing.Size(410, 24)
+  $d.Controls.Add($chkNoOffer)
+
   $bCancel = New-Object System.Windows.Forms.Button
   $bCancel.Text = 'Cancel'
   $bCancel.Font = New-Object System.Drawing.Font('Segoe UI', 9)
   $bCancel.Size = New-Object System.Drawing.Size(120, 30)
-  $bCancel.Location = New-Object System.Drawing.Point(20, 218)
+  $bCancel.Location = New-Object System.Drawing.Point(20, 248)
   $bCancel.BackColor = [System.Drawing.Color]::FromArgb(48, 52, 62)
   $bCancel.ForeColor = [System.Drawing.Color]::Gainsboro; $bCancel.FlatStyle = 'Flat'
   $d.Controls.Add($bCancel)
@@ -429,10 +439,46 @@ function Show-SetupChoice {
   $bCancel.Add_Click({ $script:__silChoice = 'cancel'; $d.Close() })
   $script:__silChoice = 'cancel'
   [void]$d.ShowDialog()
-  return @{ Action = $script:__silChoice; Hd = $chk.Checked }
+  return @{ Action = $script:__silChoice; Hd = $chk.Checked; NoOffer = $chkNoOffer.Checked }
 }
 
-# Check for a newer launcher and hand off to it before we build any UI (silent, ~1s; skipped if offline).
+# Act on a Show-SetupChoice result: records the "don't offer" flag, then downloads or picks a
+# client folder. Returns $true if a client got configured (so callers know to continue to add-ons).
+function Apply-SetupChoice($choice) {
+  if ($choice.NoOffer) { $cfg.HideDownloadOffer = $true; Save-Config $cfg }
+  if ($choice.Action -eq 'have') {
+    Set-Status 'Choose your WoW 3.3.5a folder (the one with Wow.exe)...' $amber
+    $p = Pick-WowFolder
+    if (-not (Test-WowFolder $p)) { Set-Status 'That folder has no Wow.exe. Close and re-open to try again.' $red; return $false }
+    $cfg.WowPath = $p; Save-Config $cfg
+    if ($choice.Hd) { Install-HdPatch $cfg.WowPath | Out-Null }
+    return $true
+  } elseif ($choice.Action -eq 'download') {
+    Set-Status 'Choose where to install the game...' $amber
+    $parent = Pick-InstallParent
+    if (-not $parent) { Set-Status 'Install cancelled. Re-open the launcher when you are ready.' $amber; return $false }
+    $wp = Install-Client $parent $choice.Hd
+    if (-not (Test-WowFolder $wp)) { Set-Status 'The client install did not finish. Re-open to resume the download.' $red; return $false }
+    $cfg.WowPath = $wp; Save-Config $cfg
+    return $true
+  }
+  return $false
+}
+
+# Single-instance guard: if a launcher is already open, don't stack up another (piled-up hidden
+# instances exhaust desktop heap and make new powershell launches fail with 0xc0000142).
+$script:__silMutex = New-Object System.Threading.Mutex($false, 'SkillIssueLauncher_SingleInstance')
+$gotMutex = $false
+try { $gotMutex = $script:__silMutex.WaitOne(0) }
+catch [System.Threading.AbandonedMutexException] { $gotMutex = $true }  # prior instance crashed; we own it now
+catch { $gotMutex = $true }                                             # never let mutex trouble block startup
+if (-not $gotMutex) {
+  [void][System.Windows.Forms.MessageBox]::Show('The Skill Issue Launcher is already open - check your taskbar.', 'Skill Issue Launcher', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+  exit
+}
+
+# Check for a newer launcher on disk before building the UI (silent, ~1s; applied next open).
+$script:UpdatePending = $false
 Self-Update
 
 $cfg = Load-Config
@@ -499,12 +545,21 @@ $playBtn.FlatStyle = 'Flat'
 $playBtn.Enabled = $false
 $form.Controls.Add($playBtn)
 
+$dlLink = New-Object System.Windows.Forms.LinkLabel
+$dlLink.Text = 'Get / reinstall the game'
+$dlLink.LinkColor = [System.Drawing.Color]::FromArgb(120,180,255)
+$dlLink.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+$dlLink.AutoSize = $true
+$dlLink.Location = New-Object System.Drawing.Point(24, 274)
+$dlLink.Visible = $true
+$form.Controls.Add($dlLink)
+
 $hdLink = New-Object System.Windows.Forms.LinkLabel
 $hdLink.Text = 'Install HD graphics patch (+3.2 GB)'
 $hdLink.LinkColor = [System.Drawing.Color]::FromArgb(120,180,255)
 $hdLink.Font = New-Object System.Drawing.Font('Segoe UI', 9)
 $hdLink.AutoSize = $true
-$hdLink.Location = New-Object System.Drawing.Point(24, 274)
+$hdLink.Location = New-Object System.Drawing.Point(24, 300)
 $hdLink.Visible = $false
 $form.Controls.Add($hdLink)
 
@@ -586,22 +641,15 @@ function Test-Server { try { return (Test-Connection -ComputerName $ServerIP -Co
 # ---- Add-ons + custom patch update ----
 function Update-Content {
   if (-not (Test-WowFolder $cfg.WowPath)) {
+    if ($cfg.HideDownloadOffer) {
+      # User opted out of the download offer - don't nag. They can use the main-window link.
+      Set-Status "No game folder set. Click 'Get / reinstall the game' below to (re)install." $amber
+      return $true
+    }
     $choice = Show-SetupChoice
-    if ($choice.Action -eq 'have') {
-      Set-Status 'Choose your WoW 3.3.5a folder (the one with Wow.exe)...' $amber
-      $p = Pick-WowFolder
-      if (-not (Test-WowFolder $p)) { Set-Status 'That folder has no Wow.exe. Close and re-open to try again.' $red; return $false }
-      $cfg.WowPath = $p; Save-Config $cfg
-      if ($choice.Hd) { Install-HdPatch $cfg.WowPath | Out-Null }
-    } elseif ($choice.Action -eq 'download') {
-      Set-Status 'Choose where to install the game...' $amber
-      $parent = Pick-InstallParent
-      if (-not $parent) { Set-Status 'Install cancelled. Re-open the launcher when you are ready.' $amber; return $false }
-      $wp = Install-Client $parent $choice.Hd
-      if (-not (Test-WowFolder $wp)) { Set-Status 'The client install did not finish. Re-open the launcher to resume the download.' $red; return $false }
-      $cfg.WowPath = $wp; Save-Config $cfg
-    } else {
-      Set-Status 'Setup cancelled.' $amber; return $false
+    if (-not (Apply-SetupChoice $choice)) {
+      if ($choice.Action -eq 'cancel') { Set-Status 'Setup cancelled.' $amber }
+      return $false
     }
   }
 
@@ -657,22 +705,39 @@ $hdLink.Add_LinkClicked({
   try { Install-HdPatch $cfg.WowPath | Out-Null } catch { Set-Status ('HD patch error: ' + $_.Exception.Message) $red }
   $bar.Value = 100; $playBtn.Enabled = $true; $hdLink.Enabled = $true
 })
+$dlLink.Add_LinkClicked({
+  # Escape hatch: (re)install the game on demand, and clear the "don't offer" flag.
+  $cfg.HideDownloadOffer = $false; Save-Config $cfg
+  $playBtn.Enabled = $false; $dlLink.Enabled = $false; $hdLink.Enabled = $false
+  try {
+    $choice = Show-SetupChoice
+    if (Apply-SetupChoice $choice) {
+      Update-Content | Out-Null          # install add-ons + set realmlist for the now-configured client
+      if (Test-WowFolder $cfg.WowPath) { $hdLink.Visible = $true; Set-Status "Ready. Realm: $RealmName - hit PLAY." $green }
+    }
+  } catch { Set-Status ('Error: ' + $_.Exception.Message) $red }
+  $bar.Value = 100; $playBtn.Enabled = $true; $dlLink.Enabled = $true; $hdLink.Enabled = $true
+})
 $playBtn.Add_Click({
   $wow = Join-Path $cfg.WowPath 'Wow.exe'
   if (Test-Path $wow) { Start-Process -FilePath $wow -WorkingDirectory $cfg.WowPath; $form.Close() }
-  else { Set-Status 'Wow.exe not found - re-open the launcher to re-pick your folder.' $red }
+  else { Set-Status "No game folder set - click 'Get / reinstall the game' below to install it." $red }
 })
 
 $form.Add_Shown({
   $form.Activate()
+  if ($script:UpdatePending) { $form.Text = 'Skill Issue Launcher - update ready (restart to apply)' }
   try {
     if (Ensure-Tailscale) {
       $bar.Value = 50; Set-Status 'Checking connection to the server...'
       $reach = Test-Server
       Update-Content | Out-Null
-      if (Test-WowFolder $cfg.WowPath) { $hdLink.Visible = $true }
+      $haveClient = Test-WowFolder $cfg.WowPath
+      if ($haveClient) { $hdLink.Visible = $true }
       $bar.Value = 100
-      if ($reach) {
+      if (-not $haveClient) {
+        Set-Status "No game set up yet. Click 'Get / reinstall the game' below to install it." $amber
+      } elseif ($reach) {
         Set-Status "Ready. Realm: $RealmName - hit PLAY." $green
       } else {
         Set-Status "You're on Tailscale (your IP is shown above) but can't reach the server yet. Ask Josh to add you to his Tailscale network, then re-open. You can still try PLAY." $amber
