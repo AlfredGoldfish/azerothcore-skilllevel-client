@@ -9,7 +9,7 @@ $ErrorActionPreference = 'Stop'
 $ScriptPath = $PSCommandPath                          # full path of THIS script (for self-update)
 
 # ---- CONFIG (edit these if they ever change) ----
-$LauncherVersion = 2                                  # BUMP THIS every time you change this script,
+$LauncherVersion = 3                                  # BUMP THIS every time you change this script,
                                                       # so everyone's launcher self-updates on next open.
 $RepoOwner = 'AlfredGoldfish'
 $RepoName  = 'azerothcore-skilllevel-client'
@@ -150,10 +150,22 @@ function Download-File($urls, $dest, $total, $label) {
   $curl = Get-CurlExe
   if ($curl) {
     foreach ($url in $urls) {
-      $err = Join-Path $env:TEMP ('sil_curl_' + [guid]::NewGuid().ToString('N') + '.txt')
-      $a = @('-L','-C','-','--retry','8','--retry-delay','3','--retry-all-errors','--fail','-s',
-             '-A', $BrowserUA, '-e', $Referer, '-o', $dest, $url)
-      $p = Start-Process -FilePath $curl -ArgumentList $a -PassThru -WindowStyle Hidden -RedirectStandardError $err
+      # Quote every value that can contain spaces - the browser UA AND the dest path
+      # (e.g. "D:\Anime And Movies\...") both do. Start-Process -ArgumentList with an
+      # ARRAY does NOT quote, so curl saw "-A Mozilla/5.0" then treated the rest of the
+      # UA and the path as bogus URLs and never wrote the file. Drive the process
+      # directly with an explicitly-quoted argument string instead.
+      $argStr = '-L -C - --retry 8 --retry-delay 3 --retry-all-errors --fail -s ' +
+                ('-A "{0}" ' -f $BrowserUA) +
+                ('-e "{0}" ' -f $Referer) +
+                ('-o "{0}" ' -f $dest) +
+                ('"{0}"'    -f $url)
+      $psi = New-Object System.Diagnostics.ProcessStartInfo
+      $psi.FileName        = $curl
+      $psi.Arguments       = $argStr
+      $psi.UseShellExecute = $false
+      $psi.CreateNoWindow  = $true
+      $p = [System.Diagnostics.Process]::Start($psi)
       $lastLen = 0; $lastT = Get-Date
       while (-not $p.HasExited) {
         Sleep-Pump 600
@@ -170,7 +182,6 @@ function Download-File($urls, $dest, $total, $label) {
         }
       }
       $code = $p.ExitCode
-      Remove-Item $err -Force -ErrorAction SilentlyContinue
       if ($code -eq 0) { return $true }
       if ($total -gt 0 -and (Test-Path $dest) -and ((Get-Item $dest).Length -ge $total)) { return $true }
       # else: try the next URL (curl already retried transient errors); keep partial for resume
