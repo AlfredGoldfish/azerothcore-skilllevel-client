@@ -9,7 +9,7 @@ $ErrorActionPreference = 'Stop'
 $ScriptPath = $PSCommandPath                          # full path of THIS script (for self-update)
 
 # ---- CONFIG (edit these if they ever change) ----
-$LauncherVersion = 5                                  # BUMP THIS every time you change this script,
+$LauncherVersion = 6                                  # BUMP THIS every time you change this script,
                                                       # so everyone's launcher self-updates on next open.
 $RepoOwner = 'AlfredGoldfish'
 $RepoName  = 'azerothcore-skilllevel-client'
@@ -442,6 +442,33 @@ function Show-SetupChoice {
   return @{ Action = $script:__silChoice; Hd = $chk.Checked; NoOffer = $chkNoOffer.Checked }
 }
 
+# Seed a windowed-1080p Config.wtf into a freshly-installed client - but ONLY if it has no
+# config yet, so we never clobber an existing client or fight the player's later in-game changes.
+# hwDetect "0" is essential: without it WoW re-detects the GPU on first launch and resets the
+# window/resolution back to fullscreen-native.
+function Seed-ClientConfig($wowPath) {
+  if (-not (Test-WowFolder $wowPath)) { return }
+  $wtfDir = Join-Path $wowPath 'WTF'
+  $cfgWtf = Join-Path $wtfDir 'Config.wtf'
+  if (Test-Path $cfgWtf) { return }
+  if (-not (Test-Path $wtfDir)) { New-Item -ItemType Directory -Path $wtfDir -Force | Out-Null }
+  $lines = @(
+    'SET locale "enUS"',
+    'SET gxWindow "1"',
+    'SET gxResolution "1920x1080"',
+    'SET hwDetect "0"',
+    'SET gxRefresh "60"',
+    'SET videoOptionsVersion "3"',
+    'SET readTOS "1"',
+    'SET readEULA "1"',
+    'SET readTerminationWithoutNotice "1"',
+    'SET accounttype "LK"',
+    ('SET realmList "' + $ServerIP + '"'),
+    ('SET realmName "' + $RealmName + '"')
+  )
+  try { Set-Content -Path $cfgWtf -Value $lines -Encoding ASCII } catch {}
+}
+
 # Act on a Show-SetupChoice result: records the "don't offer" flag, then downloads or picks a
 # client folder. Returns $true if a client got configured (so callers know to continue to add-ons).
 function Apply-SetupChoice($choice) {
@@ -451,6 +478,7 @@ function Apply-SetupChoice($choice) {
     $p = Pick-WowFolder
     if (-not (Test-WowFolder $p)) { Set-Status 'That folder has no Wow.exe. Close and re-open to try again.' $red; return $false }
     $cfg.WowPath = $p; Save-Config $cfg
+    Seed-ClientConfig $cfg.WowPath
     if ($choice.Hd) { Install-HdPatch $cfg.WowPath | Out-Null }
     return $true
   } elseif ($choice.Action -eq 'download') {
@@ -460,6 +488,7 @@ function Apply-SetupChoice($choice) {
     $wp = Install-Client $parent $choice.Hd
     if (-not (Test-WowFolder $wp)) { Set-Status 'The client install did not finish. Re-open to resume the download.' $red; return $false }
     $cfg.WowPath = $wp; Save-Config $cfg
+    Seed-ClientConfig $cfg.WowPath
     return $true
   }
   return $false
