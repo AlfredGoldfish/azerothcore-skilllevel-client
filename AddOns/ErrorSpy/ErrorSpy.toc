@@ -1,7 +1,0 @@
-## Interface: 30300
-## Title: ErrorSpy |cffff5555(diagnostics)|r
-## Notes: Temporary diagnostics: captures Lua errors (with stacks) and red UI error text, prints them and saves them to ErrorSpyDB.
-## Author: v2 server
-## Version: 1.0
-## SavedVariables: ErrorSpyDB
-ErrorSpy.lua

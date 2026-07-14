@@ -9,7 +9,7 @@ $ErrorActionPreference = 'Stop'
 $ScriptPath = $PSCommandPath                          # full path of THIS script (for self-update)
 
 # ---- CONFIG (edit these if they ever change) ----
-$LauncherVersion = 7                                  # BUMP THIS every time you change this script,
+$LauncherVersion = 8                                  # BUMP THIS every time you change this script,
                                                       # so everyone's launcher self-updates on next open.
 $RepoOwner = 'AlfredGoldfish'
 $RepoName  = 'azerothcore-skilllevel-client'
@@ -713,6 +713,16 @@ function Update-Content {
       } else { $bar.Value = 85; Set-Status 'Update package looked empty - kept existing files.' $amber }
     } catch {
       $bar.Value = 85; Set-Status ('Update skipped (' + $_.Exception.Message + '). Using existing files.') $amber
+    }
+  }
+
+  # Remove retired add-ons from the client (QuickBags -> superseded by Bagnon+ServerBags;
+  # ErrorSpy -> was temporary diagnostics). Runs every launch so existing installs get cleaned.
+  $aoDir = Join-Path $cfg.WowPath 'Interface\AddOns'
+  if (Test-Path $aoDir) {
+    foreach ($retired in @('QuickBags', 'ErrorSpy')) {
+      $rp = Join-Path $aoDir $retired
+      if (Test-Path $rp) { try { Remove-Item $rp -Recurse -Force -ErrorAction SilentlyContinue } catch {} }
     }
   }
 
