@@ -1,0 +1,10 @@
+aria2c.exe in this repo is aria2 1.37.0 (win-64bit static build), an unmodified
+binary redistributed here so the Skill Issue Launcher can download the game client
+over BitTorrent without the player installing anything.
+
+aria2 is free software licensed under GPLv2-or-later (with an OpenSSL linking
+exception). Full license text: aria2-COPYING.txt.
+Source code and releases: https://github.com/aria2/aria2
+
+We ship it unchanged; to obtain the exact corresponding source, see the release
+tag `release-1.37.0` at the URL above.

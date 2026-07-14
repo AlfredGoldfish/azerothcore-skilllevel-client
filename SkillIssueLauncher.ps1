@@ -9,13 +9,14 @@ $ErrorActionPreference = 'Stop'
 $ScriptPath = $PSCommandPath                          # full path of THIS script (for self-update)
 
 # ---- CONFIG (edit these if they ever change) ----
-$LauncherVersion = 3                                  # BUMP THIS every time you change this script,
+$LauncherVersion = 4                                  # BUMP THIS every time you change this script,
                                                       # so everyone's launcher self-updates on next open.
 $RepoOwner = 'AlfredGoldfish'
 $RepoName  = 'azerothcore-skilllevel-client'
 $Branch    = 'main'
 $ServerIP  = '100.109.250.55'                       # Josh's PC on Tailscale = where the server lives
 $RealmName = "It's a Skill issue Mikey"
+$RawBase   = "https://raw.githubusercontent.com/$RepoOwner/$RepoName/$Branch"
 
 # Full 3.3.5a (build 12340) client + optional HD patch, hosted by ChromieCraft.
 # The host uses hotlink protection: it 403s unless we send a browser User-Agent AND
@@ -31,6 +32,12 @@ $HdBytes     = 3397498676                           # ~3.2 GB
 $BrowserUA   = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 $Referer     = 'https://chromiecraft.com/'
 $InstallName = 'WoW-3.3.5a-SkillIssue'              # folder created inside the parent the user picks
+
+# Preferred download = BitTorrent (pulls from many seeders, ~5-6x faster than the single
+# HTTP mirror, and dodges the mirror's per-IP throttle). aria2c handles it headlessly so
+# the player never touches a torrent client; HTTP mirrors above remain the fallback.
+$ClientMagnet = 'magnet:?xt=urn:btih:2ba2833baf733ce0a16040d43ed09491f2bf2ab2&dn=ChromieCraft_3.3.5a.zip&tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A80%2Fannounce&tr=http%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce&tr=udp%3A%2F%2Ftracker.uw0.xyz%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.zerobytes.xyz%3A1337%2Fannounce'
+$Aria2Url     = "$RawBase/aria2c.exe"               # standalone downloader, fetched + cached on first use
 # -------------------------------------------------
 
 $ZipUrl  = "https://github.com/$RepoOwner/$RepoName/archive/refs/heads/$Branch.zip"
@@ -263,6 +270,59 @@ function Install-HdPatch($wowPath) {
   return $true
 }
 
+# Fetch + cache aria2c.exe (the headless torrent/multi-connection downloader). One-time ~5 MB.
+function Ensure-Aria2 {
+  $toolDir = Join-Path $CfgDir 'tools'
+  $exe = Join-Path $toolDir 'aria2c.exe'
+  if (Test-Path $exe) { return $exe }
+  Set-Status 'Getting the fast downloader (one-time, ~5 MB)...' $amber
+  if (-not (Test-Path $toolDir)) { New-Item -ItemType Directory -Path $toolDir -Force | Out-Null }
+  $tmp = Join-Path $toolDir 'aria2c.exe.part'
+  if (Download-File @($Aria2Url) $tmp 0 'downloader') {
+    try { Move-Item $tmp $exe -Force; return $exe } catch { return $null }
+  }
+  Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+  return $null
+}
+
+# Download a magnet/torrent with aria2c into $destDir\$destName. The file is sparse-preallocated
+# so we can't poll its size - we parse aria2's console progress instead, and treat "the .aria2
+# control file is gone" (which aria2 deletes only on full completion) as the success signal.
+function Download-Torrent($magnet, $destDir, $destName, $total, $label) {
+  $aria = Ensure-Aria2
+  if (-not $aria) { return $false }
+  if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
+  $destFile = Join-Path $destDir $destName
+  $log = Join-Path $env:TEMP ('sil_aria_' + [guid]::NewGuid().ToString('N') + '.log')
+  '' | Set-Content $log -Encoding ASCII; '' | Set-Content ($log + '.err') -Encoding ASCII
+  $argStr = ('--dir="{0}" -o "{1}" ' -f $destDir, $destName) +
+            '--seed-time=0 --file-allocation=none --continue=true --allow-overwrite=true --auto-file-renaming=false ' +
+            '--summary-interval=1 --console-log-level=warn --enable-color=false --bt-stop-timeout=120 ' +
+            ('"{0}"' -f $magnet)
+  $p = Start-Process -FilePath $aria -ArgumentList $argStr -PassThru -WindowStyle Hidden -RedirectStandardOutput $log -RedirectStandardError ($log + '.err')
+  $rx = '\[#\w+\s+([0-9.]+[KMGTP]?i?B)/([0-9.]+[KMGTP]?i?B)\((\d+)%\)[^\]]*\]'
+  while (-not $p.HasExited) {
+    Sleep-Pump 1000
+    $tail = ''
+    try { $tail = ((Get-Content $log -Tail 6 -ErrorAction SilentlyContinue) + (Get-Content ($log + '.err') -Tail 6 -ErrorAction SilentlyContinue)) -join "`n" } catch {}
+    $mm = [regex]::Matches($tail, $rx)
+    if ($mm.Count -gt 0) {
+      $tok  = $mm[$mm.Count - 1]
+      $done = $tok.Groups[1].Value; $tot = $tok.Groups[2].Value; $pct = [int]$tok.Groups[3].Value
+      $dlm  = [regex]::Match($tok.Value, 'DL:([0-9.]+[KMGTP]?i?B)')
+      $spd  = if ($dlm.Success) { $dlm.Groups[1].Value + '/s' } else { '' }
+      $bar.Value = [Math]::Max(1, [Math]::Min(100, $pct))
+      Set-Status ("Downloading $label via torrent - $done / $tot ($pct%)   $spd`r`nPulling from multiple peers - much faster. You can leave this running; it resumes if interrupted.") $amber
+    } else {
+      Set-Status ("Finding download peers for $label (a few seconds)...") $amber
+    }
+  }
+  try { $p.WaitForExit() } catch {}
+  Remove-Item $log, ($log + '.err') -Force -ErrorAction SilentlyContinue
+  # aria2 removes the .aria2 control file only when the download is 100% complete.
+  return ((Test-Path $destFile) -and (-not (Test-Path ($destFile + '.aria2'))))
+}
+
 # Download + extract the full client into <parent>\$InstallName; returns the folder with Wow.exe (or $null)
 function Install-Client($parent, $installHd) {
   $free = Get-FreeSpaceGB $parent
@@ -275,10 +335,21 @@ function Install-Client($parent, $installHd) {
   }
   $target = Join-Path $parent $InstallName
   if (-not (Test-Path $target)) { New-Item -ItemType Directory -Path $target -Force | Out-Null }
-  $zip = Join-Path (Join-Path $parent '_sil_download') 'ChromieCraft_3.3.5a.zip'
+  $dlDir = Join-Path $parent '_sil_download'
+  $zip   = Join-Path $dlDir 'ChromieCraft_3.3.5a.zip'
 
   Set-Status 'Starting the game download (~16.5 GB)...' $amber
-  if (-not (Download-File $ClientUrls $zip $ClientBytes 'game client')) {
+  # Prefer the torrent (many seeders = much faster, and dodges the mirror's per-IP throttle).
+  $got = Download-Torrent $ClientMagnet $dlDir 'ChromieCraft_3.3.5a.zip' $ClientBytes 'game client'
+  if (-not $got) {
+    # Torrent didn't pan out - clear its (sparse/incomplete) file so the HTTP "already
+    # complete" size check can't be fooled by the full-size sparse allocation, then fall back.
+    Remove-Item $zip -Force -ErrorAction SilentlyContinue
+    Remove-Item ($zip + '.aria2') -Force -ErrorAction SilentlyContinue
+    Set-Status 'Torrent unavailable - switching to the direct download...' $amber
+    $got = Download-File $ClientUrls $zip $ClientBytes 'game client'
+  }
+  if (-not $got) {
     Set-Status 'Client download failed. Re-open the launcher to resume where it left off.' $red; return $null
   }
   Set-Status 'Extracting the game (this takes several minutes)...' $amber

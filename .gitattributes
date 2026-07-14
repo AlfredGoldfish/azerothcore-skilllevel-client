@@ -4,3 +4,6 @@
 *.mpq binary
 *.blp binary
 *.dbc binary
+*.exe binary
+*.ico binary
+*.torrent binary
