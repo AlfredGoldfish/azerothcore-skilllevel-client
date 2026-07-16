@@ -92,6 +92,23 @@ local function setRole(name, role, makePrimary)
   end
 end
 
+-- A bot only obeys 'tank attack'/'focus heal' if it's actually in that combat
+-- strategy (IsTank/IsHeal = "has tank/heal strategy"), so assigning a role must
+-- push the strategy to the bot. It persists on the bot server-side once set.
+local ROLE_STRAT = {
+  TANK = "+tank,+tank assist,-heal",       -- tank assist = pick up your target
+  HEAL = "+heal,-tank,-tank assist",
+  DPS  = "+dps,-tank,-tank assist,-heal",
+}
+local function applyRole(name)             -- send to an OUT companion (whisper is ignored if offline)
+  local s = ROLE_STRAT[getRole(name)]
+  if s then SendChatMessage("co " .. s, "WHISPER", nil, name) end
+end
+local function applyRoleIfSpecial(name)    -- on invite: only tank/heal need it (dps is the default)
+  local r = getRole(name)
+  if r == "TANK" or r == "HEAL" then applyRole(name) end
+end
+
 -- who is actually OUT (real party members), grouped by assigned role
 local function partyByRole()
   local t = { TANK = {}, HEAL = {}, DPS = {} }
@@ -161,7 +178,12 @@ local function inviteFavorites()
   if #names == 0 then cprint("No favorites yet — check the box on up to " .. MAX_ACTIVE .. " companions first.") return end
   local delay, sent = 0, 0
   for _, name in ipairs(names) do                   -- stagger the invites so the logins queue cleanly
-    if not out[name] then after(delay, function() rpc("I:" .. name) end); delay = delay + 0.4; sent = sent + 1 end
+    if not out[name] then
+      local nm = name
+      after(delay, function() rpc("I:" .. nm) end)
+      after(delay + 3, function() applyRoleIfSpecial(nm) end)   -- restore its tank/heal strategy once logged in
+      delay = delay + 0.4; sent = sent + 1
+    end
   end
   if sent == 0 then cprint("Your favorite party is already out.")
   else cprint("Summoning your favorite party (" .. sent .. " incoming)...") end
@@ -219,7 +241,9 @@ local function rebuildRoster()
       local nxt = ROLE_NEXT[getRole(c.name)]
       setRole(c.name, nxt, true)
       row.role:SetText(ROLE_TXT[nxt])
-      cprint(c.name .. " is now " .. nxt .. ((nxt ~= "DPS") and " (primary " .. string.lower(nxt) .. ")" or ""))
+      if c.online == 1 then applyRole(c.name) end   -- make the bot actually that role now
+      cprint(c.name .. " is now " .. nxt ..
+        (c.online == 1 and " (applied)" or " — invite it to apply") .. ".")
     end)
 
     row.fav:SetChecked(isFav(c.name) and true or false)
@@ -228,7 +252,8 @@ local function rebuildRoster()
     row.act:SetText(c.online == 1 and "Dismiss" or "Invite")
     row.act:SetScript("OnClick", function()
       -- Server enforces the max-out cap (across all accounts) and messages you if exceeded.
-      if c.online == 1 then rpc("D:" .. c.name) else rpc("I:" .. c.name) end
+      if c.online == 1 then rpc("D:" .. c.name)
+      else local nm = c.name; rpc("I:" .. nm); after(3, function() applyRoleIfSpecial(nm) end) end
       after(1.3, refresh)
     end)
 
@@ -240,6 +265,7 @@ local function rebuildRoster()
         menu[#menu + 1] = { text = s, notCheckable = true, func = function()
           whisperSpec(c.name, s)
           local r = roleFromSpec(s); setRole(c.name, r, true); row.role:SetText(ROLE_TXT[r])
+          if c.online == 1 then applyRole(c.name) end
           cprint(c.name .. " -> " .. s .. "  |cff888888(role: " .. r .. ")|r")
         end }
       end
