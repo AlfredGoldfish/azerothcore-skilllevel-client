@@ -1,7 +1,0 @@
-## Interface: 30300
-## Title: Rare Radar |cffc0c0c0(Apex alerts)|r
-## Notes: Server-pushed proximity alerts for Apex rare elites: raid-warning banner + sound + chat line
-## Author: v2 server
-## Version: 1.0
-## SavedVariablesPerCharacter: RareRadarDB
-RareRadar.lua

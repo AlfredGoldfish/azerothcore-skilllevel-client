@@ -80,7 +80,12 @@ local function roleFromSpec(spec)
   return "DPS"
 end
 
-local function getRole(name) return (CompanionPartyDB.roles or {})[name] or "DPS" end
+-- SROLE = role from a companion's LIVE spec, reported by the server in the roster reply (keyed by
+-- name). It's the fallback so /ct /ch address a real tank/healer even before you spec via /cp; an
+-- explicit role you set (pill / Spec pick, stored in CompanionPartyDB.roles) still wins over it.
+local SROLE = {}
+local ROLE_OF = { T = "TANK", H = "HEAL", D = "DPS" }
+local function getRole(name) return (CompanionPartyDB.roles or {})[name] or SROLE[name] or "DPS" end
 
 local function setRole(name, role, makePrimary)
   CompanionPartyDB.roles = CompanionPartyDB.roles or {}
@@ -507,8 +512,11 @@ local function onMessage(message)
   if not fcls then return end
   roster = {}
   for entry in (body):gmatch("[^;]+") do
-    local n, l, c, o = entry:match("^(.-),(%d+),(%d+),(%d+)$")
-    if n then roster[#roster + 1] = { name = n, lvl = tonumber(l), cls = tonumber(c), online = tonumber(o) } end
+    local n, l, c, o, r = entry:match("^(.-),(%d+),(%d+),(%d+),?(%a*)$")   -- role field is optional (back-compat)
+    if n then
+      roster[#roster + 1] = { name = n, lvl = tonumber(l), cls = tonumber(c), online = tonumber(o) }
+      SROLE[n] = ROLE_OF[r]     -- nil when r is "" / unknown -> getRole falls back to DPS
+    end
   end
   rebuildRoster()
 end
@@ -522,7 +530,8 @@ ev:SetScript("OnEvent", function(self, event, ...)
     local prefix, message = ...
     if prefix == PREFIX then onMessage(message) end
   elseif event == "PARTY_MEMBERS_CHANGED" then
-    if frame and frame:IsShown() then after(0.5, refresh) end
+    if frame and frame:IsShown() then after(0.5, refresh)          -- panel open: repaint (also refreshes spec-roles)
+    else after(0.5, function() rpc("L:0") end) end                 -- panel closed: still refresh online roles so /ct /ch work
   elseif event == "ADDON_LOADED" and ... == "CompanionParty" then
     CompanionPartyDB = CompanionPartyDB or {}
     CompanionPartyDB.roles = CompanionPartyDB.roles or {}
