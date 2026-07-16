@@ -121,6 +121,30 @@ local function applyAllRoles()
   else cprint("Applied roles to " .. n .. " companion" .. (n == 1 and "" or "s") .. ".") end
 end
 
+-- Seed a few BASE macros in the WoW macro list you can copy into your own. They use
+-- the addon's own /ct /cd slashes + party chat, so they're ready to extend (add a
+-- /target, /cast, etc. above them). Two are combo templates showing the pattern.
+local function makeExampleMacros()
+  if InCombatLockdown() then cprint("Can't create macros during combat — try again after the fight.") return end
+  local me = UnitName("player")
+  local list = {
+    { n = "CP Assist",    b = "/p attack" },                                   -- all companions -> your target
+    { n = "CP TankPull",  b = "/ct tank attack" },                             -- your tank -> your target
+    { n = "CP HealMe",    b = "/ch focus heal +" .. me },                      -- your healer prioritizes you
+    { n = "CP DpsAll",    b = "/cd attack" },                                  -- all dps -> your target
+    { n = "CP Engage",    b = "/targetenemy\n/startattack\n/p attack" },       -- combo: target, swing, party assist
+    { n = "CP PullCombo", b = "/targetenemy\n/ct tank attack" },              -- combo: target, tank pulls (you hang back)
+  }
+  local made, upd = 0, 0
+  for _, m in ipairs(list) do
+    local idx = GetMacroIndexByName(m.n)
+    if idx and idx > 0 then EditMacro(idx, m.n, "INV_Misc_GroupLooking", m.b); upd = upd + 1
+    elseif CreateMacro(m.n, "INV_Misc_GroupLooking", m.b, nil) then made = made + 1
+    else cprint("Your macro list is full — free a general slot (|cffffff00/macro|r) and try again."); break end
+  end
+  cprint("Example macros ready (" .. made .. " new, " .. upd .. " updated). Open |cffffff00/macro|r to copy them; swap in your own /cast or /target lines.")
+end
+
 -- who is actually OUT (real party members), grouped by assigned role
 local function partyByRole()
   local t = { TANK = {}, HEAL = {}, DPS = {} }
@@ -292,7 +316,7 @@ end
 local function buildFrame()
   if frame then return end
   frame = CreateFrame("Frame", "CompanionPartyFrame", UIParent)
-  frame:SetSize(360, 540)
+  frame:SetSize(360, 566)
   frame:SetPoint("CENTER")
   frame:SetBackdrop({
     bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
@@ -400,8 +424,16 @@ local function buildFrame()
   end)
   favBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
-  local hint = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-  hint:SetPoint("BOTTOM", 0, 72); hint:SetText("Check the box on up to " .. MAX_ACTIVE .. " companions to set favorites.")
+  local macroBtn = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+  macroBtn:SetSize(150, 22); macroBtn:SetPoint("BOTTOM", 0, 76); macroBtn:SetText("Example macros")
+  macroBtn:SetScript("OnClick", makeExampleMacros)
+  macroBtn:SetScript("OnEnter", function(self)
+    GameTooltip:SetOwner(self, "ANCHOR_TOP")
+    GameTooltip:AddLine("Make example macros")
+    GameTooltip:AddLine("Adds base macros (Assist, TankPull, HealMe + combos) to your list to copy from.", .8,.8,.8, true)
+    GameTooltip:Show()
+  end)
+  macroBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
   local dismissAll = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
   dismissAll:SetSize(96, 22); dismissAll:SetPoint("BOTTOMLEFT", 20, 16); dismissAll:SetText("Dismiss all")
