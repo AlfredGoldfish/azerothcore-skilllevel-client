@@ -73,7 +73,9 @@ local ROLE_NEXT = { DPS="TANK", TANK="HEAL", HEAL="DPS" }
 
 local function roleFromSpec(spec)
   spec = string.lower(spec or "")
-  if spec:find("prot") or spec:find("bear") then return "TANK" end
+  -- "blood" is DK-only and is the playerbots engine's designated DK tank tree
+  -- (IsTank bySpec true for DEATH_KNIGHT_TAB_BLOOD); frost/unholy stay DPS.
+  if spec:find("prot") or spec:find("bear") or spec:find("blood") then return "TANK" end
   if spec:find("holy") or spec:find("disc") or spec:find("resto") then return "HEAL" end
   return "DPS"
 end
@@ -188,11 +190,11 @@ end
 
 local frame, rows, selRace, selClass = nil, {}, nil, nil
 local bar
-local selFilter = 1          -- roster filter: a class id, or 0 = currently-out companions
+local selFilter = 0          -- roster filter: 0 = currently-out companions, or a class id
 local roster = {}
 
 ------------------------------------------------------------------ ROSTER UI ---
-local function refresh() rpc("L:" .. (selFilter or 1)) end
+local function refresh() rpc("L:" .. (selFilter or 0)) end
 
 -- FAVORITES: check up to 4 companions once; "Invite Favorite Party" summons them.
 local function countFavs()
@@ -209,8 +211,13 @@ local function toggleFav(name)
 end
 local function inviteFavorites()
   local favs = CompanionPartyDB.favorites or {}
-  local out = {}                                    -- who's already in the party
-  for i = 1, GetNumPartyMembers() do local nm = UnitName("party" .. i); if nm then out[nm] = true end end
+  local out = {}                                    -- who's already OUT (online in the party)
+  -- Only ONLINE members count as "out". An offline group member (e.g. still in the
+  -- group after a server restart logged the bots out) must be logged back in, not skipped.
+  for i = 1, GetNumPartyMembers() do
+    local nm = UnitName("party" .. i)
+    if nm and UnitIsConnected("party" .. i) then out[nm] = true end
+  end
   local names = {}
   for name in pairs(favs) do names[#names + 1] = name end
   if #names == 0 then cprint("No favorites yet — check the box on up to " .. MAX_ACTIVE .. " companions first.") return end
@@ -360,7 +367,7 @@ local function buildFrame()
       UIDropDownMenu_AddButton(info)
     end
   end)
-  UIDropDownMenu_SetText(filterDD, "Warrior")
+  UIDropDownMenu_SetText(filterDD, "Out (active)")
 
   frame.count = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
   frame.count:SetPoint("TOPRIGHT", -20, -60)
