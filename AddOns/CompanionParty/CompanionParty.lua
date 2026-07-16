@@ -63,16 +63,15 @@ end)
 local function after(sec, fn) timers[#timers + 1] = { t = sec, fn = fn } end
 
 local frame, rows, selRace, selClass = nil, {}, nil, nil
+local selFilter = 1          -- roster filter: a class id, or 0 = currently-out companions
 local roster = {}
 
 ------------------------------------------------------------------ ROSTER UI ---
-local function refresh() rpc("L") end
+local function refresh() rpc("L:" .. (selFilter or 1)) end
 
 local function rebuildRoster()
   if not frame then return end
-  local active = 0
-  for _, c in ipairs(roster) do if c.online == 1 then active = active + 1 end end
-  frame.count:SetText(string.format("Companions: %d   (out: %d/%d)", #roster, active, MAX_ACTIVE))
+  frame.count:SetText(string.format("%d shown  |  max %d out", #roster, MAX_ACTIVE))
 
   for i, row in ipairs(rows) do row:Hide() end
   for i, c in ipairs(roster) do
@@ -190,14 +189,32 @@ local function buildFrame()
     after(1.6, refresh)
   end)
 
-  -- ---- Divider + roster header -----------------------------------------
+  -- ---- Divider + roster header + class filter --------------------------
   local hdr = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-  hdr:SetPoint("TOPLEFT", 20, -124); hdr:SetText("Your companions:")
+  hdr:SetPoint("TOPLEFT", 20, -120); hdr:SetText("Bench:")
+
+  local FILTERS = {
+    {id=0,n="Out (active)"}, {id=1,n="Warrior"}, {id=2,n="Paladin"}, {id=3,n="Hunter"}, {id=4,n="Rogue"},
+    {id=5,n="Priest"}, {id=6,n="Death Knight"}, {id=7,n="Shaman"}, {id=8,n="Mage"}, {id=9,n="Warlock"}, {id=11,n="Druid"},
+  }
+  local filterDD = CreateFrame("Frame", "CompanionPartyFilterDD", frame, "UIDropDownMenuTemplate")
+  filterDD:SetPoint("TOPLEFT", 44, -114)
+  UIDropDownMenu_SetWidth(filterDD, 110)
+  UIDropDownMenu_Initialize(filterDD, function()
+    for _, f in ipairs(FILTERS) do
+      local info = UIDropDownMenu_CreateInfo()
+      info.text = f.n
+      info.func = function() selFilter = f.id; UIDropDownMenu_SetText(filterDD, f.n); refresh() end
+      UIDropDownMenu_AddButton(info)
+    end
+  end)
+  UIDropDownMenu_SetText(filterDD, "Warrior")
+
   frame.count = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  frame.count:SetPoint("TOPRIGHT", -20, -126)
+  frame.count:SetPoint("TOPRIGHT", -20, -124)
 
   frame.listAnchor = CreateFrame("Frame", nil, frame)
-  frame.listAnchor:SetSize(320, 1); frame.listAnchor:SetPoint("TOPLEFT", 20, -144)
+  frame.listAnchor:SetSize(320, 1); frame.listAnchor:SetPoint("TOPLEFT", 20, -150)
 
   frame.specMenu = CreateFrame("Frame", "CompanionPartySpecMenu", UIParent, "UIDropDownMenuTemplate")
 
@@ -222,8 +239,8 @@ end
 
 ------------------------------------------------------------------- EVENTS -----
 local function onMessage(message)
-  local body = message:match("^R|(.*)$")
-  if not body then return end
+  local fcls, body = message:match("^R|(%d+)|(.*)$")
+  if not fcls then return end
   roster = {}
   for entry in (body):gmatch("[^;]+") do
     local n, l, c, o = entry:match("^(.-),(%d+),(%d+),(%d+)$")
