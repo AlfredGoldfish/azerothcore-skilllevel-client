@@ -132,8 +132,10 @@ local function makeExampleMacros()
     { n = "CP TankPull",  b = "/ct tank attack" },                             -- your tank -> your target
     { n = "CP HealMe",    b = "/ch focus heal +" .. me },                      -- your healer prioritizes you
     { n = "CP DpsAll",    b = "/cd attack" },                                  -- all dps -> your target
-    { n = "CP Engage",    b = "/targetenemy\n/startattack\n/p attack" },       -- combo: target, swing, party assist
-    { n = "CP PullCombo", b = "/targetenemy\n/ct tank attack" },              -- combo: target, tank pulls (you hang back)
+    -- [noharm][dead] = only grab a new enemy when the current target is friendly/none or dead,
+    -- so you stay on your live target but move on the moment it dies (no lingering on the corpse).
+    { n = "CP Engage",    b = "/targetenemy [noharm][dead]\n/startattack\n/p attack" },   -- target, swing, party assist
+    { n = "CP PullCombo", b = "/targetenemy [noharm][dead]\n/ct tank attack" },           -- target, tank pulls (you hang back)
   }
   local made, upd = 0, 0
   for _, m in ipairs(list) do
