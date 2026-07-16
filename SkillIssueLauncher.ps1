@@ -9,7 +9,7 @@ $ErrorActionPreference = 'Stop'
 $ScriptPath = $PSCommandPath                          # full path of THIS script (for self-update)
 
 # ---- CONFIG (edit these if they ever change) ----
-$LauncherVersion = 9                                  # BUMP THIS every time you change this script,
+$LauncherVersion = 10                                 # BUMP THIS every time you change this script,
                                                       # so everyone's launcher self-updates on next open.
 $RepoOwner = 'AlfredGoldfish'
 $RepoName  = 'azerothcore-skilllevel-client'
@@ -839,9 +839,14 @@ $dlLink.Add_LinkClicked({
   $bar.Value = 100; $playBtn.Enabled = $true; $dlLink.Enabled = $true; $hdLink.Enabled = $true
 })
 $playBtn.Add_Click({
-  $wow = Join-Path $cfg.WowPath 'Wow.exe'
-  if (Test-Path $wow) { Start-Process -FilePath $wow -WorkingDirectory $cfg.WowPath; $form.Close() }
-  else { Set-Status "No game folder set - click 'Get / reinstall the game' below to install it." $red }
+  # Test-WowFolder safely handles an empty/unset WowPath (no Join-Path on ""), so a fresh
+  # install that hasn't picked a folder yet shows guidance instead of an unhandled crash.
+  if (Test-WowFolder $cfg.WowPath) {
+    Start-Process -FilePath (Join-Path $cfg.WowPath 'Wow.exe') -WorkingDirectory $cfg.WowPath
+    $form.Close()
+  } else {
+    Set-Status "No game folder set yet - click 'Get / reinstall the game' below to install it (or point it at your existing WoW 3.3.5a folder)." $red
+  }
 })
 
 $form.Add_Shown({
