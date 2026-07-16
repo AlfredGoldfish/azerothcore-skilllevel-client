@@ -62,7 +62,77 @@ timerHost:SetScript("OnUpdate", function(_, e)
 end)
 local function after(sec, fn) timers[#timers + 1] = { t = sec, fn = fn } end
 
+------------------------------------------------------- ROLES & COMMANDS ------
+-- You address a ROLE, not a name. Roles follow the SPEC you assign (prot/bear ->
+-- tank, holy/disc/resto -> heal, else dps); DK tanks & oddities: click the role
+-- pill to override. Stored per companion in CompanionPartyDB.roles. When several
+-- of a role are out, the "primary" (CompanionPartyDB.primary) is who gets tank/
+-- heal orders; dps orders go to ALL dps.
+local ROLE_TXT  = { TANK="|cff6f9bc4T|r", HEAL="|cff8cc07aH|r", DPS="|cffd1706bD|r" }
+local ROLE_NEXT = { DPS="TANK", TANK="HEAL", HEAL="DPS" }
+
+local function roleFromSpec(spec)
+  spec = string.lower(spec or "")
+  if spec:find("prot") or spec:find("bear") then return "TANK" end
+  if spec:find("holy") or spec:find("disc") or spec:find("resto") then return "HEAL" end
+  return "DPS"
+end
+
+local function getRole(name) return (CompanionPartyDB.roles or {})[name] or "DPS" end
+
+local function setRole(name, role, makePrimary)
+  CompanionPartyDB.roles = CompanionPartyDB.roles or {}
+  CompanionPartyDB.primary = CompanionPartyDB.primary or {}
+  CompanionPartyDB.roles[name] = role
+  for r, pn in pairs(CompanionPartyDB.primary) do                 -- release a stale primary slot
+    if pn == name and r ~= role then CompanionPartyDB.primary[r] = nil end
+  end
+  if makePrimary and (role == "TANK" or role == "HEAL") then
+    CompanionPartyDB.primary[role] = name
+  end
+end
+
+-- who is actually OUT (real party members), grouped by assigned role
+local function partyByRole()
+  local t = { TANK = {}, HEAL = {}, DPS = {} }
+  for i = 1, GetNumPartyMembers() do
+    local nm = UnitName("party" .. i)
+    if nm then local r = getRole(nm); t[r][#t[r] + 1] = nm end
+  end
+  return t
+end
+
+local function primaryName(role)
+  local list = partyByRole()[role]
+  if #list == 0 then return nil end
+  local p = (CompanionPartyDB.primary or {})[role]
+  if p then for _, nm in ipairs(list) do if nm == p then return p end end end
+  return list[1]                                    -- fallback: first of that role who is out
+end
+
+local function sendTo(name, cmd) SendChatMessage(cmd, "WHISPER", nil, name) end
+
+-- Address a role. tank/heal -> the primary holder; dps -> EVERY dps that is out.
+local function cmdRole(role, cmd)
+  if not cmd or cmd == "" then cprint("Give a command, e.g. |cffffff00/ct attack|r") return end
+  if role == "DPS" then
+    local list = partyByRole().DPS
+    if #list == 0 then cprint("No DPS companion is out.") return end
+    for _, nm in ipairs(list) do sendTo(nm, cmd) end
+  else
+    local nm = primaryName(role)
+    if not nm then cprint("No " .. string.lower(role) .. " companion is out.") return end
+    sendTo(nm, cmd)
+  end
+end
+
+local function cmdAll(cmd)
+  if GetNumPartyMembers() == 0 then cprint("No companions are out.") return end
+  SendChatMessage(cmd, "PARTY")
+end
+
 local frame, rows, selRace, selClass = nil, {}, nil, nil
+local bar
 local selFilter = 1          -- roster filter: a class id, or 0 = currently-out companions
 local roster = {}
 
@@ -81,18 +151,37 @@ local function rebuildRoster()
       row:SetSize(320, 24)
       row:SetPoint("TOPLEFT", frame.listAnchor, "TOPLEFT", 0, -(i - 1) * 26)
       row.label = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-      row.label:SetPoint("LEFT", 2, 0); row.label:SetWidth(150); row.label:SetJustifyH("LEFT")
+      row.label:SetPoint("LEFT", 2, 0); row.label:SetWidth(106); row.label:SetJustifyH("LEFT")
+
+      row.role = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+      row.role:SetSize(24, 20); row.role:SetPoint("LEFT", 112, 0)
+      row.role:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:AddLine("Role: " .. getRole(row._name))
+        GameTooltip:AddLine("Click to change. Tank/Heal become the primary that /ct /ch address.", .7,.7,.7, true)
+        GameTooltip:Show()
+      end)
+      row.role:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
       row.act = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
-      row.act:SetSize(66, 20); row.act:SetPoint("LEFT", 156, 0)
+      row.act:SetSize(60, 20); row.act:SetPoint("LEFT", 140, 0)
 
       row.spec = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
-      row.spec:SetSize(60, 20); row.spec:SetPoint("LEFT", 226, 0); row.spec:SetText("Spec")
+      row.spec:SetSize(58, 20); row.spec:SetPoint("LEFT", 204, 0); row.spec:SetText("Spec")
       rows[i] = row
     end
 
+    row._name = c.name
     row:SetPoint("TOPLEFT", frame.listAnchor, "TOPLEFT", 0, -(i - 1) * 26)
     row.label:SetText(string.format("%s |cffaaaaaa L%d %s|r", c.name, c.lvl, CLASS_NAME[c.cls] or "?"))
+
+    row.role:SetText(ROLE_TXT[getRole(c.name)])
+    row.role:SetScript("OnClick", function()
+      local nxt = ROLE_NEXT[getRole(c.name)]
+      setRole(c.name, nxt, true)
+      row.role:SetText(ROLE_TXT[nxt])
+      cprint(c.name .. " is now " .. nxt .. ((nxt ~= "DPS") and " (primary " .. string.lower(nxt) .. ")" or ""))
+    end)
 
     row.act:SetText(c.online == 1 and "Dismiss" or "Invite")
     row.act:SetScript("OnClick", function()
@@ -104,10 +193,12 @@ local function rebuildRoster()
     if c.online == 1 then row.spec:Enable() else row.spec:Disable() end
     row.spec:SetScript("OnClick", function()
       if c.online ~= 1 then cprint("Invite " .. c.name .. " first, then set its spec.") return end
-      local menu = { { text = c.name .. " — spec", isTitle = true, notCheckable = true } }
+      local menu = { { text = c.name .. " — spec (sets role)", isTitle = true, notCheckable = true } }
       for _, s in ipairs(SPECS[c.cls] or {}) do
         menu[#menu + 1] = { text = s, notCheckable = true, func = function()
-          whisperSpec(c.name, s); cprint(c.name .. " -> spec: " .. s)
+          whisperSpec(c.name, s)
+          local r = roleFromSpec(s); setRole(c.name, r, true); row.role:SetText(ROLE_TXT[r])
+          cprint(c.name .. " -> " .. s .. "  |cff888888(role: " .. r .. ")|r")
         end }
       end
       EasyMenu(menu, frame.specMenu, "cursor", 0, 0, "MENU")
@@ -231,6 +322,66 @@ local function buildFrame()
   hint:SetText("Invite up to " .. MAX_ACTIVE .. ". They level, quest & loot with you.")
 end
 
+------------------------------------------------------------- COMMAND BAR ------
+-- A movable order bar (the "totem bar"). Role buttons resolve to whoever holds
+-- that role right now; the rest broadcast to the whole party. All combat-safe.
+local BAR_BTNS = {
+  { t="Assist", tip="All companions attack your current target",   fn=function() cmdAll("attack") end },
+  { t="Tank",   tip="Your tank engages/pulls your target",         fn=function() cmdRole("TANK", "tank attack") end },
+  { t="Heal",   tip="Your healer prioritizes healing you",         fn=function() cmdRole("HEAL", "focus heal +" .. UnitName("player")) end },
+  { t="DPS",    tip="All DPS companions attack your target",        fn=function() cmdRole("DPS", "attack") end },
+  { t="Follow", tip="Everyone follows you",                         fn=function() cmdAll("follow") end },
+  { t="Stay",   tip="Everyone holds position",                      fn=function() cmdAll("stay") end },
+  { t="Come",   tip="Teleport companions to you",                   fn=function() cmdAll("summon") end },
+  { t="Defend", tip="Everyone steps out of ground AoE",             fn=function() cmdAll("co +avoid aoe") end },
+  { t="Loot",   tip="Everyone loots nearby",                        fn=function() cmdAll("add all loot") end },
+  { t="Rez",    tip="Revive fallen companions",                     fn=function() cmdAll("revive") end },
+}
+
+local function buildBar()
+  if bar then return end
+  local n = #BAR_BTNS
+  bar = CreateFrame("Frame", "CompanionBar", UIParent)
+  bar:SetSize(10 + n * 52, 40)
+  bar:SetBackdrop({
+    bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
+    edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+    tile = true, tileSize = 16, edgeSize = 14, insets = { left = 4, right = 4, top = 4, bottom = 4 },
+  })
+  bar:SetMovable(true); bar:EnableMouse(true); bar:RegisterForDrag("LeftButton")
+  bar:SetScript("OnDragStart", bar.StartMoving)
+  bar:SetScript("OnDragStop", function(self)
+    self:StopMovingOrSizing()
+    local p, _, rp, x, y = self:GetPoint()
+    CompanionPartyDB.bar = CompanionPartyDB.bar or {}
+    CompanionPartyDB.bar.p, CompanionPartyDB.bar.rp, CompanionPartyDB.bar.x, CompanionPartyDB.bar.y = p, rp, x, y
+  end)
+  bar:SetClampedToScreen(true)
+  local sv = CompanionPartyDB.bar or {}
+  bar:SetPoint(sv.p or "CENTER", UIParent, sv.rp or "CENTER", sv.x or 0, sv.y or -160)
+
+  local lbl = bar:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+  lbl:SetPoint("BOTTOM", 0, -13); lbl:SetText("Companion orders — drag to move · /cp bar to hide")
+
+  for i, b in ipairs(BAR_BTNS) do
+    local btn = CreateFrame("Button", nil, bar, "UIPanelButtonTemplate")
+    btn:SetSize(48, 26); btn:SetPoint("LEFT", 6 + (i - 1) * 52, 0)
+    btn:SetText(b.t); btn:SetScript("OnClick", b.fn)
+    btn:SetScript("OnEnter", function(self)
+      GameTooltip:SetOwner(self, "ANCHOR_TOP")
+      GameTooltip:AddLine(b.t); GameTooltip:AddLine(b.tip, .8, .8, .8, true); GameTooltip:Show()
+    end)
+    btn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+  end
+end
+
+local function toggleBar()
+  buildBar()
+  CompanionPartyDB.bar = CompanionPartyDB.bar or {}
+  if bar:IsShown() then bar:Hide(); CompanionPartyDB.bar.shown = false
+  else bar:Show(); CompanionPartyDB.bar.shown = true end
+end
+
 local function toggle()
   buildFrame()
   if frame:IsShown() then frame:Hide() else frame:Show(); refresh() end
@@ -260,11 +411,27 @@ ev:SetScript("OnEvent", function(self, event, ...)
     if frame and frame:IsShown() then after(0.5, refresh) end
   elseif event == "ADDON_LOADED" and ... == "CompanionParty" then
     CompanionPartyDB = CompanionPartyDB or {}
-    cprint("loaded. Open with |cffffff00/cp|r  (create, invite, set spec).")
+    CompanionPartyDB.roles = CompanionPartyDB.roles or {}
+    CompanionPartyDB.primary = CompanionPartyDB.primary or {}
+    CompanionPartyDB.bar = CompanionPartyDB.bar or { shown = true }
+    buildBar()
+    if CompanionPartyDB.bar.shown == false then bar:Hide() else bar:Show() end
+    cprint("loaded. |cffffff00/cp|r panel · |cffffff00/cp bar|r order bar · roles: |cffffff00/ct /ch /cd|r <cmd>.")
   end
 end)
 
 SLASH_COMPANIONPARTY1 = "/cp"
 SLASH_COMPANIONPARTY2 = "/companion"
 SLASH_COMPANIONPARTY3 = "/companions"
-SlashCmdList["COMPANIONPARTY"] = toggle
+SlashCmdList["COMPANIONPARTY"] = function(msg)
+  msg = string.lower(msg or ""):gsub("^%s+", ""):gsub("%s+$", "")
+  if msg == "bar" then toggleBar() else toggle() end
+end
+
+-- Role-addressed orders: address the ROLE, whoever holds it acts.
+--   /ct <cmd>  -> your primary tank      e.g.  /ct tank attack   /ct summon
+--   /ch <cmd>  -> your primary healer    e.g.  /ch focus heal +Zeackhunter
+--   /cd <cmd>  -> ALL dps that are out   e.g.  /cd attack
+SLASH_CPTANK1 = "/ct"; SlashCmdList["CPTANK"] = function(m) cmdRole("TANK", (m or ""):gsub("^%s+", "")) end
+SLASH_CPHEAL1 = "/ch"; SlashCmdList["CPHEAL"] = function(m) cmdRole("HEAL", (m or ""):gsub("^%s+", "")) end
+SLASH_CPDPS1  = "/cd"; SlashCmdList["CPDPS"]  = function(m) cmdRole("DPS",  (m or ""):gsub("^%s+", "")) end
