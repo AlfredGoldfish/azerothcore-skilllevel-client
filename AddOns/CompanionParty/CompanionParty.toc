@@ -1,0 +1,6 @@
+## Interface: 30300
+## Title: Companion Party |cff33ff99(create, invite, spec)|r
+## Notes: Create up to 4 companions of any class/race in your faction, invite them, and set their spec. They level, quest and dungeon with you.
+## Author: skill-leveling-overhaul
+## SavedVariables: CompanionPartyDB
+CompanionParty.lua
