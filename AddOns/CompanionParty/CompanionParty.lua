@@ -318,7 +318,7 @@ end
 local function buildFrame()
   if frame then return end
   frame = CreateFrame("Frame", "CompanionPartyFrame", UIParent)
-  frame:SetSize(360, 566)
+  frame:SetSize(360, 492)
   frame:SetPoint("CENTER")
   frame:SetBackdrop({
     bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
@@ -337,64 +337,20 @@ local function buildFrame()
   local close = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
   close:SetPoint("TOPRIGHT", -8, -8)
 
-  -- ---- Create row -------------------------------------------------------
-  local mk = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-  mk:SetPoint("TOPLEFT", 20, -44); mk:SetText("Create a companion:")
+  -- Companions are assigned automatically (one of each class except your own).
+  local sub = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+  sub:SetPoint("TOP", 0, -36); sub:SetText("Your bench — one companion of each class, leveling with you.")
 
-  local raceDD = CreateFrame("Frame", "CompanionPartyRaceDD", frame, "UIDropDownMenuTemplate")
-  raceDD:SetPoint("TOPLEFT", 8, -60)
-  local myRaces = FACTION_RACES[UnitFactionGroup("player")] or FACTION_RACES.Horde
-  UIDropDownMenu_SetWidth(raceDD, 90)
-  UIDropDownMenu_Initialize(raceDD, function()
-    for _, r in ipairs(myRaces) do
-      local info = UIDropDownMenu_CreateInfo()
-      info.text = r.n; info.func = function() selRace = r.id; UIDropDownMenu_SetText(raceDD, r.n) end
-      UIDropDownMenu_AddButton(info)
-    end
-  end)
-  UIDropDownMenu_SetText(raceDD, "Race")
-
-  local classDD = CreateFrame("Frame", "CompanionPartyClassDD", frame, "UIDropDownMenuTemplate")
-  classDD:SetPoint("LEFT", raceDD, "RIGHT", -10, 0)
-  UIDropDownMenu_SetWidth(classDD, 100)
-  UIDropDownMenu_Initialize(classDD, function()
-    for _, c in ipairs(CLASSES) do
-      local info = UIDropDownMenu_CreateInfo()
-      info.text = c.n; info.func = function() selClass = c.id; UIDropDownMenu_SetText(classDD, c.n) end
-      UIDropDownMenu_AddButton(info)
-    end
-  end)
-  UIDropDownMenu_SetText(classDD, "Class")
-
-  local nameBox = CreateFrame("EditBox", "CompanionPartyNameBox", frame, "InputBoxTemplate")
-  nameBox:SetSize(120, 20); nameBox:SetPoint("TOPLEFT", 24, -92)
-  nameBox:SetAutoFocus(false); nameBox:SetMaxLetters(12)
-  local nlbl = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-  nlbl:SetPoint("BOTTOMLEFT", nameBox, "TOPLEFT", -2, 1); nlbl:SetText("Name")
-
-  local createBtn = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-  createBtn:SetSize(90, 22); createBtn:SetPoint("LEFT", nameBox, "RIGHT", 14, 0); createBtn:SetText("Create")
-  createBtn:SetScript("OnClick", function()
-    local name = nameBox:GetText()
-    if not selRace or not selClass then cprint("Pick a race and class first.") return end
-    if not name or name == "" then cprint("Enter a name.") return end
-    local g = math.random(0, 1)
-    rpc("C:" .. selRace .. ":" .. selClass .. ":" .. name .. ":" .. g)
-    cprint("Creating " .. name .. " ... (watch for the server message)")
-    nameBox:SetText("")
-    after(1.6, refresh)
-  end)
-
-  -- ---- Divider + roster header + class filter --------------------------
+  -- ---- Roster header + class filter ------------------------------------
   local hdr = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-  hdr:SetPoint("TOPLEFT", 20, -120); hdr:SetText("Bench:")
+  hdr:SetPoint("TOPLEFT", 20, -56); hdr:SetText("Bench:")
 
   local FILTERS = {
     {id=0,n="Out (active)"}, {id=1,n="Warrior"}, {id=2,n="Paladin"}, {id=3,n="Hunter"}, {id=4,n="Rogue"},
     {id=5,n="Priest"}, {id=6,n="Death Knight"}, {id=7,n="Shaman"}, {id=8,n="Mage"}, {id=9,n="Warlock"}, {id=11,n="Druid"},
   }
   local filterDD = CreateFrame("Frame", "CompanionPartyFilterDD", frame, "UIDropDownMenuTemplate")
-  filterDD:SetPoint("TOPLEFT", 44, -114)
+  filterDD:SetPoint("TOPLEFT", 44, -50)
   UIDropDownMenu_SetWidth(filterDD, 110)
   UIDropDownMenu_Initialize(filterDD, function()
     for _, f in ipairs(FILTERS) do
@@ -407,10 +363,10 @@ local function buildFrame()
   UIDropDownMenu_SetText(filterDD, "Warrior")
 
   frame.count = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  frame.count:SetPoint("TOPRIGHT", -20, -124)
+  frame.count:SetPoint("TOPRIGHT", -20, -60)
 
   frame.listAnchor = CreateFrame("Frame", nil, frame)
-  frame.listAnchor:SetSize(320, 1); frame.listAnchor:SetPoint("TOPLEFT", 20, -150)
+  frame.listAnchor:SetSize(320, 1); frame.listAnchor:SetPoint("TOPLEFT", 20, -86)
 
   frame.specMenu = CreateFrame("Frame", "CompanionPartySpecMenu", UIParent, "UIDropDownMenuTemplate")
 
@@ -519,7 +475,8 @@ end
 
 local function toggle()
   buildFrame()
-  if frame:IsShown() then frame:Hide() else frame:Show(); refresh() end
+  if frame:IsShown() then frame:Hide()
+  else frame:Show(); refresh(); after(2.5, refresh) end   -- 2nd refresh catches first-use provisioning
 end
 
 ------------------------------------------------------------------- EVENTS -----
