@@ -109,6 +109,18 @@ local function applyRoleIfSpecial(name)    -- on invite: only tank/heal need it 
   if r == "TANK" or r == "HEAL" then applyRole(name) end
 end
 
+-- Re-push every out companion's strategy in one click (only those you've given a role).
+local function applyAllRoles()
+  if GetNumPartyMembers() == 0 then cprint("No companions are out.") return end
+  local n = 0
+  for i = 1, GetNumPartyMembers() do
+    local nm = UnitName("party" .. i)
+    if nm and CompanionPartyDB.roles and CompanionPartyDB.roles[nm] then applyRole(nm); n = n + 1 end
+  end
+  if n == 0 then cprint("None of your out companions has a role yet — set one with the T/H/D pill.")
+  else cprint("Applied roles to " .. n .. " companion" .. (n == 1 and "" or "s") .. ".") end
+end
+
 -- who is actually OUT (real party members), grouped by assigned role
 local function partyByRole()
   local t = { TANK = {}, HEAL = {}, DPS = {} }
@@ -392,11 +404,22 @@ local function buildFrame()
   hint:SetPoint("BOTTOM", 0, 72); hint:SetText("Check the box on up to " .. MAX_ACTIVE .. " companions to set favorites.")
 
   local dismissAll = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-  dismissAll:SetSize(110, 22); dismissAll:SetPoint("BOTTOMLEFT", 20, 16); dismissAll:SetText("Dismiss all")
+  dismissAll:SetSize(96, 22); dismissAll:SetPoint("BOTTOMLEFT", 20, 16); dismissAll:SetText("Dismiss all")
   dismissAll:SetScript("OnClick", function() rpc("X"); after(1.2, refresh) end)
 
+  local applyRolesBtn = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+  applyRolesBtn:SetSize(104, 22); applyRolesBtn:SetPoint("BOTTOM", 0, 16); applyRolesBtn:SetText("Apply Roles")
+  applyRolesBtn:SetScript("OnClick", applyAllRoles)
+  applyRolesBtn:SetScript("OnEnter", function(self)
+    GameTooltip:SetOwner(self, "ANCHOR_TOP")
+    GameTooltip:AddLine("Apply Roles")
+    GameTooltip:AddLine("Re-push tank/heal/dps strategy to every companion that's out.", .8,.8,.8, true)
+    GameTooltip:Show()
+  end)
+  applyRolesBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
   local refreshBtn = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-  refreshBtn:SetSize(90, 22); refreshBtn:SetPoint("BOTTOMRIGHT", -20, 16); refreshBtn:SetText("Refresh")
+  refreshBtn:SetSize(84, 22); refreshBtn:SetPoint("BOTTOMRIGHT", -20, 16); refreshBtn:SetText("Refresh")
   refreshBtn:SetScript("OnClick", refresh)
 end
 
