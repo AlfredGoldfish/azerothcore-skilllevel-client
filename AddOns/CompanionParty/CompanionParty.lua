@@ -96,9 +96,8 @@ local function rebuildRoster()
 
     row.act:SetText(c.online == 1 and "Dismiss" or "Invite")
     row.act:SetScript("OnClick", function()
-      if c.online == 1 then rpc("D:" .. c.name)
-      elseif active >= MAX_ACTIVE then cprint("You already have " .. MAX_ACTIVE .. " out. Dismiss one first.")
-      else rpc("I:" .. c.name) end
+      -- Server enforces the max-out cap (across all accounts) and messages you if exceeded.
+      if c.online == 1 then rpc("D:" .. c.name) else rpc("I:" .. c.name) end
       after(1.3, refresh)
     end)
 
