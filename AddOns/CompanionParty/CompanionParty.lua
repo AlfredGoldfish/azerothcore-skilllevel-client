@@ -139,14 +139,29 @@ local function makeExampleMacros()
     { n = "CP Engage",    b = "/targetenemy [noharm][dead]\n/startattack\n/p attack" },   -- target, swing, party assist
     { n = "CP PullCombo", b = "/targetenemy [noharm][dead]\n/ct tank attack" },           -- target, tank pulls (you hang back)
   }
-  local made, upd = 0, 0
+  local made, upd, fail, firstErr = 0, 0, 0, nil
   for _, m in ipairs(list) do
     local idx = GetMacroIndexByName(m.n)
-    if idx and idx > 0 then EditMacro(idx, m.n, "INV_Misc_GroupLooking", m.b); upd = upd + 1
-    elseif CreateMacro(m.n, "INV_Misc_GroupLooking", m.b, nil) then made = made + 1
-    else cprint("Your macro list is full — free a general slot (|cffffff00/macro|r) and try again."); break end
+    -- icon = 1 (numeric index of the default question-mark icon) is exactly what Blizzard's
+    -- own macro UI passes; a texture-NAME string can make CreateMacro throw on 3.3.5a and,
+    -- without a pcall, one throw silently aborts the whole run (that's the "does nothing" bug).
+    if idx and idx > 0 then
+      local ok, err = pcall(EditMacro, idx, m.n, 1, m.b)
+      if ok then upd = upd + 1 else fail = fail + 1; firstErr = firstErr or tostring(err) end
+    else
+      local ok, res = pcall(CreateMacro, m.n, 1, m.b, nil)   -- nil = account/General macro
+      if ok and res then made = made + 1
+      else fail = fail + 1; firstErr = firstErr or (ok and "macro list full" or tostring(res)) end
+    end
   end
-  cprint("Example macros ready (" .. made .. " new, " .. upd .. " updated). Open |cffffff00/macro|r to copy them; swap in your own /cast or /target lines.")
+  if fail == 0 then
+    cprint("Example macros ready (" .. made .. " new, " .. upd .. " updated) — open |cffffff00/macro|r and look under the |cffffff00General|r tab.")
+    if MacroFrame and MacroFrame.IsShown and MacroFrame:IsShown() and MacroFrame_Update then MacroFrame_Update() end
+  else
+    cprint("Added " .. made .. ", updated " .. upd .. ", |cffff5555" .. fail .. " failed|r.")
+    if firstErr then cprint("Reason: |cffff5555" .. firstErr .. "|r") end
+    cprint("If it says the list is full, free some slots in the |cffffff00/macro|r General tab (18 max), then click again.")
+  end
 end
 
 -- who is actually OUT (real party members), grouped by assigned role
