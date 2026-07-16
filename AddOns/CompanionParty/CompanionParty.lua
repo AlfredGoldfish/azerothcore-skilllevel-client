@@ -139,6 +139,35 @@ local roster = {}
 ------------------------------------------------------------------ ROSTER UI ---
 local function refresh() rpc("L:" .. (selFilter or 1)) end
 
+-- FAVORITES: check up to 4 companions once; "Invite Favorite Party" summons them.
+local function countFavs()
+  local n = 0; for _ in pairs(CompanionPartyDB.favorites or {}) do n = n + 1 end; return n
+end
+local function isFav(name) return CompanionPartyDB.favorites and CompanionPartyDB.favorites[name] end
+local function toggleFav(name)
+  CompanionPartyDB.favorites = CompanionPartyDB.favorites or {}
+  if CompanionPartyDB.favorites[name] then CompanionPartyDB.favorites[name] = nil; return false end
+  if countFavs() >= MAX_ACTIVE then
+    cprint("You already have " .. MAX_ACTIVE .. " favorites — uncheck one first.") return nil
+  end
+  CompanionPartyDB.favorites[name] = true; return true
+end
+local function inviteFavorites()
+  local favs = CompanionPartyDB.favorites or {}
+  local out = {}                                    -- who's already in the party
+  for i = 1, GetNumPartyMembers() do local nm = UnitName("party" .. i); if nm then out[nm] = true end end
+  local names = {}
+  for name in pairs(favs) do names[#names + 1] = name end
+  if #names == 0 then cprint("No favorites yet — check the box on up to " .. MAX_ACTIVE .. " companions first.") return end
+  local delay, sent = 0, 0
+  for _, name in ipairs(names) do                   -- stagger the invites so the logins queue cleanly
+    if not out[name] then after(delay, function() rpc("I:" .. name) end); delay = delay + 0.4; sent = sent + 1 end
+  end
+  if sent == 0 then cprint("Your favorite party is already out.")
+  else cprint("Summoning your favorite party (" .. sent .. " incoming)...") end
+  after(delay + 1.3, refresh)
+end
+
 local function rebuildRoster()
   if not frame then return end
   frame.count:SetText(string.format("%d shown  |  max %d out", #roster, MAX_ACTIVE))
@@ -168,6 +197,16 @@ local function rebuildRoster()
 
       row.spec = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
       row.spec:SetSize(58, 20); row.spec:SetPoint("LEFT", 204, 0); row.spec:SetText("Spec")
+
+      row.fav = CreateFrame("CheckButton", nil, row, "UICheckButtonTemplate")
+      row.fav:SetSize(22, 22); row.fav:SetPoint("LEFT", 266, -1)
+      row.fav:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:AddLine("Favorite")
+        GameTooltip:AddLine("Check up to " .. MAX_ACTIVE .. "; 'Invite Favorite Party' summons them all in one click.", .7,.7,.7, true)
+        GameTooltip:Show()
+      end)
+      row.fav:SetScript("OnLeave", function() GameTooltip:Hide() end)
       rows[i] = row
     end
 
@@ -182,6 +221,9 @@ local function rebuildRoster()
       row.role:SetText(ROLE_TXT[nxt])
       cprint(c.name .. " is now " .. nxt .. ((nxt ~= "DPS") and " (primary " .. string.lower(nxt) .. ")" or ""))
     end)
+
+    row.fav:SetChecked(isFav(c.name) and true or false)
+    row.fav:SetScript("OnClick", function(self) self:SetChecked(toggleFav(c.name) == true) end)
 
     row.act:SetText(c.online == 1 and "Dismiss" or "Invite")
     row.act:SetScript("OnClick", function()
@@ -212,7 +254,7 @@ end
 local function buildFrame()
   if frame then return end
   frame = CreateFrame("Frame", "CompanionPartyFrame", UIParent)
-  frame:SetSize(360, 420)
+  frame:SetSize(360, 540)
   frame:SetPoint("CENTER")
   frame:SetBackdrop({
     bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
@@ -308,18 +350,28 @@ local function buildFrame()
 
   frame.specMenu = CreateFrame("Frame", "CompanionPartySpecMenu", UIParent, "UIDropDownMenuTemplate")
 
-  -- ---- Footer buttons ---------------------------------------------------
+  -- ---- Footer: one-click favorite party + management -------------------
+  local favBtn = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+  favBtn:SetSize(200, 26); favBtn:SetPoint("BOTTOM", 0, 46); favBtn:SetText("Invite Favorite Party")
+  favBtn:SetScript("OnClick", inviteFavorites)
+  favBtn:SetScript("OnEnter", function(self)
+    GameTooltip:SetOwner(self, "ANCHOR_TOP")
+    GameTooltip:AddLine("Invite Favorite Party")
+    GameTooltip:AddLine("Summons the (up to " .. MAX_ACTIVE .. ") companions you checked as favorites.", .8,.8,.8, true)
+    GameTooltip:Show()
+  end)
+  favBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+  local hint = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+  hint:SetPoint("BOTTOM", 0, 72); hint:SetText("Check the box on up to " .. MAX_ACTIVE .. " companions to set favorites.")
+
   local dismissAll = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-  dismissAll:SetSize(110, 22); dismissAll:SetPoint("BOTTOMLEFT", 20, 18); dismissAll:SetText("Dismiss all")
+  dismissAll:SetSize(110, 22); dismissAll:SetPoint("BOTTOMLEFT", 20, 16); dismissAll:SetText("Dismiss all")
   dismissAll:SetScript("OnClick", function() rpc("X"); after(1.2, refresh) end)
 
   local refreshBtn = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-  refreshBtn:SetSize(90, 22); refreshBtn:SetPoint("BOTTOMRIGHT", -20, 18); refreshBtn:SetText("Refresh")
+  refreshBtn:SetSize(90, 22); refreshBtn:SetPoint("BOTTOMRIGHT", -20, 16); refreshBtn:SetText("Refresh")
   refreshBtn:SetScript("OnClick", refresh)
-
-  local hint = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-  hint:SetPoint("BOTTOM", 0, 44)
-  hint:SetText("Invite up to " .. MAX_ACTIVE .. ". They level, quest & loot with you.")
 end
 
 ------------------------------------------------------------- COMMAND BAR ------
@@ -413,6 +465,7 @@ ev:SetScript("OnEvent", function(self, event, ...)
     CompanionPartyDB = CompanionPartyDB or {}
     CompanionPartyDB.roles = CompanionPartyDB.roles or {}
     CompanionPartyDB.primary = CompanionPartyDB.primary or {}
+    CompanionPartyDB.favorites = CompanionPartyDB.favorites or {}
     CompanionPartyDB.bar = CompanionPartyDB.bar or { shown = true }
     buildBar()
     if CompanionPartyDB.bar.shown == false then bar:Hide() else bar:Show() end
