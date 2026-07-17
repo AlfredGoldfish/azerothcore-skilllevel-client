@@ -1,0 +1,5 @@
+## Interface: 30300
+## Title: Custom Item Icon Fix
+## Notes: Resolves the red "?" icon on custom item entries (bags, equipped, loot) via GetItemInfo.
+## Author: AzerothCore CustomItemFix (Ethos DIF), extended
+CustomItemFix.lua

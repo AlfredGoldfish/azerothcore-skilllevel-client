@@ -85,6 +85,10 @@ end
 -- explicit role you set (pill / Spec pick, stored in CompanionPartyDB.roles) still wins over it.
 local SROLE = {}
 local ROLE_OF = { T = "TANK", H = "HEAL", D = "DPS" }
+-- Names seen in the server bench roster = our companions (so the "In Party" view can tell a companion
+-- apart from a real player). UnitClass() file-token -> class id, for building that view client-side.
+local KNOWN_COMPANIONS = {}
+local CLASS_TOKEN_ID = { WARRIOR=1, PALADIN=2, HUNTER=3, ROGUE=4, PRIEST=5, DEATHKNIGHT=6, SHAMAN=7, MAGE=8, WARLOCK=9, DRUID=11 }
 local function getRole(name) return (CompanionPartyDB.roles or {})[name] or SROLE[name] or "DPS" end
 
 local function setRole(name, role, makePrimary)
@@ -214,7 +218,11 @@ local selFilter = 0          -- roster filter: 0 = currently-out companions, or 
 local roster = {}
 
 ------------------------------------------------------------------ ROSTER UI ---
-local function refresh() rpc("L:" .. (selFilter or 0)) end
+local rebuildRoster, buildPartyRoster          -- forward decls (defined below)
+local function refresh()
+  if selFilter == "party" then buildPartyRoster()   -- client-built view of your CURRENT party
+  else rpc("L:" .. (selFilter or 0)) end             -- server bench roster (a class, or 0 = online)
+end
 
 -- FAVORITES: check up to 4 companions once; "Invite Favorite Party" summons them.
 local function countFavs()
@@ -255,7 +263,7 @@ local function inviteFavorites()
   after(delay + 1.3, refresh)
 end
 
-local function rebuildRoster()
+rebuildRoster = function()
   if not frame then return end
   frame.count:SetText(string.format("%d shown  |  max %d out", #roster, MAX_ACTIVE))
 
@@ -299,9 +307,18 @@ local function rebuildRoster()
 
     row._name = c.name
     row:SetPoint("TOPLEFT", frame.listAnchor, "TOPLEFT", 0, -(i - 1) * 26)
-    row.label:SetText(string.format("%s |cffaaaaaa L%d %s|r", c.name, c.lvl, CLASS_NAME[c.cls] or "?"))
 
-    row.role:SetText(ROLE_TXT[getRole(c.name)])
+    if c.isPlayer then
+      -- A real player in your current party (In Party view): info only, no companion controls.
+      row.label:SetText(string.format("%s |cffaaaaaa L%d %s|r  |cff88bbff%s|r",
+        c.name, c.lvl, CLASS_NAME[c.cls] or "?", c.isYou and "(you)" or "(player)"))
+      row.role:Hide(); row.act:Hide(); row.spec:Hide(); row.fav:Hide()
+      row:Show()
+    else
+      row.role:Show(); row.act:Show(); row.spec:Show(); row.fav:Show()
+      row.label:SetText(string.format("%s |cffaaaaaa L%d %s|r", c.name, c.lvl, CLASS_NAME[c.cls] or "?"))
+
+      row.role:SetText(ROLE_TXT[getRole(c.name)])
     row.role:SetScript("OnClick", function()
       local nxt = ROLE_NEXT[getRole(c.name)]
       setRole(c.name, nxt, true)
@@ -337,8 +354,27 @@ local function rebuildRoster()
       EasyMenu(menu, frame.specMenu, "cursor", 0, 0, "MENU")
     end)
 
-    row:Show()
+      row:Show()
+    end
   end
+end
+
+-- Build a client-side view of your CURRENT party (you + party members) for the "In Party" filter.
+-- Companions (names known from the bench roster) keep full controls; real players show info-only.
+buildPartyRoster = function()
+  roster = {}
+  local function classId(u) local _, t = UnitClass(u); return CLASS_TOKEN_ID[t] or 0 end
+  roster[#roster + 1] = { name = UnitName("player"), lvl = UnitLevel("player"),
+    cls = classId("player"), online = 1, isPlayer = true, isYou = true }
+  for i = 1, GetNumPartyMembers() do
+    local u = "party" .. i
+    local nm = UnitName(u)
+    if nm then
+      roster[#roster + 1] = { name = nm, lvl = UnitLevel(u), cls = classId(u),
+        online = UnitIsConnected(u) and 1 or 0, isPlayer = not KNOWN_COMPANIONS[nm] }
+    end
+  end
+  rebuildRoster()
 end
 
 ------------------------------------------------------------------ BUILD UI ----
@@ -373,7 +409,8 @@ local function buildFrame()
   hdr:SetPoint("TOPLEFT", 20, -56); hdr:SetText("Bench:")
 
   local FILTERS = {
-    {id=0,n="Out (active)"}, {id=1,n="Warrior"}, {id=2,n="Paladin"}, {id=3,n="Hunter"}, {id=4,n="Rogue"},
+    {id=0,n="Out (active)"}, {id="party",n="In Party"},
+    {id=1,n="Warrior"}, {id=2,n="Paladin"}, {id=3,n="Hunter"}, {id=4,n="Rogue"},
     {id=5,n="Priest"}, {id=6,n="Death Knight"}, {id=7,n="Shaman"}, {id=8,n="Mage"}, {id=9,n="Warlock"}, {id=11,n="Druid"},
   }
   local filterDD = CreateFrame("Frame", "CompanionPartyFilterDD", frame, "UIDropDownMenuTemplate")
@@ -516,6 +553,7 @@ local function onMessage(message)
     if n then
       roster[#roster + 1] = { name = n, lvl = tonumber(l), cls = tonumber(c), online = tonumber(o) }
       SROLE[n] = ROLE_OF[r]     -- nil when r is "" / unknown -> getRole falls back to DPS
+      KNOWN_COMPANIONS[n] = true -- remember it's a companion (for the In Party view's player-vs-companion split)
     end
   end
   rebuildRoster()

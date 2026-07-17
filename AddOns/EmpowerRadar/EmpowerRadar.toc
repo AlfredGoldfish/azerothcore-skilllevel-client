@@ -1,0 +1,5 @@
+## Interface: 30300
+## Title: Empower Radar
+## Notes: Tags empowered overworld creatures with a purple [Empowered xN] tier line on their tooltip.
+## Author: v2 realm
+EmpowerRadar.lua
