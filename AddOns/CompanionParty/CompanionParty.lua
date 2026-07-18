@@ -220,7 +220,10 @@ local roster = {}
 ------------------------------------------------------------------ ROSTER UI ---
 local rebuildRoster, buildPartyRoster          -- forward decls (defined below)
 local function refresh()
-  if selFilter == "party" then buildPartyRoster()   -- client-built view of your CURRENT party
+  if selFilter == "party" then buildPartyRoster()    -- client-built view of your CURRENT party
+  elseif selFilter == "journal" then                 -- away-journal: what favorites did since last check
+    roster = {}
+    rpc("J")                                         -- server replies J|<line> per companion + J|END
   else rpc("L:" .. (selFilter or 0)) end             -- server bench roster (a class, or 0 = online)
 end
 
@@ -308,14 +311,22 @@ rebuildRoster = function()
     row._name = c.name
     row:SetPoint("TOPLEFT", frame.listAnchor, "TOPLEFT", 0, -(i - 1) * 26)
 
-    if c.isPlayer then
+    if c.isJournal then
+      -- Away-journal line: full-width text, no controls.
+      row.label:SetWidth(330); row.label:SetHeight(24); row.label:SetJustifyV("TOP")
+      row.label:SetText("|cffd8d8d8" .. c.name .. "|r")
+      row.role:Hide(); row.act:Hide(); row.spec:Hide(); row.fav:Hide()
+      row:Show()
+    elseif c.isPlayer then
       -- A real player in your current party (In Party view): info only, no companion controls.
+      row.label:SetWidth(106)
       row.label:SetText(string.format("%s |cffaaaaaa L%d %s|r  |cff88bbff%s|r",
         c.name, c.lvl, CLASS_NAME[c.cls] or "?", c.isYou and "(you)" or "(player)"))
       row.role:Hide(); row.act:Hide(); row.spec:Hide(); row.fav:Hide()
       row:Show()
     else
       row.role:Show(); row.act:Show(); row.spec:Show(); row.fav:Show()
+      row.label:SetWidth(106)
       row.label:SetText(string.format("%s |cffaaaaaa L%d %s|r", c.name, c.lvl, CLASS_NAME[c.cls] or "?"))
 
       row.role:SetText(ROLE_TXT[getRole(c.name)])
@@ -409,7 +420,7 @@ local function buildFrame()
   hdr:SetPoint("TOPLEFT", 20, -56); hdr:SetText("Bench:")
 
   local FILTERS = {
-    {id=0,n="Out (active)"}, {id="party",n="In Party"},
+    {id=0,n="Out (active)"}, {id="party",n="In Party"}, {id="journal",n="Journal"},
     {id=1,n="Warrior"}, {id=2,n="Paladin"}, {id=3,n="Hunter"}, {id=4,n="Rogue"},
     {id=5,n="Priest"}, {id=6,n="Death Knight"}, {id=7,n="Shaman"}, {id=8,n="Mage"}, {id=9,n="Warlock"}, {id=11,n="Druid"},
   }
@@ -545,6 +556,14 @@ end
 
 ------------------------------------------------------------------- EVENTS -----
 local function onMessage(message)
+  -- Journal replies: one J|<line> per companion, then J|END. Only consumed by the Journal view.
+  local jline = message:match("^J|(.*)$")
+  if jline then
+    if selFilter ~= "journal" then return end
+    if jline == "END" then rebuildRoster()
+    else roster[#roster + 1] = { name = jline, isJournal = true } end
+    return
+  end
   local fcls, body = message:match("^R|(%d+)|(.*)$")
   if not fcls then return end
   roster = {}

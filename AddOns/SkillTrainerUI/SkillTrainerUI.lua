@@ -35,7 +35,7 @@ local FILTERS = {
   { t = "Locked",     v = "locked" },
 }
 
-local function rpc(msg) SendAddonMessage(PREFIX, msg, "WHISPER", UnitName("player")) end
+local function rpc(msg) end   -- NEUTERED (2026-07-17): skill-leveling reverted to vanilla; never emit a SKILLTR RPC
 
 local function stateOf(d)
   if not d then return "locked" end
@@ -622,22 +622,13 @@ ev:SetScript("OnEvent", function(self, event, ...)
       DB = SkillTrainerUIDB
       for _, d in pairs(DB) do d.sig = nil; d.loop = nil end   -- v2 milestone leftovers
       buildFrame()
-      DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99SkillTrainerUI|r loaded. Talk to your class trainer, or |cffffff00/skilltrainer|r to open.")
+      DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99SkillTrainerUI|r loaded (disabled - native class trainer is in use).")
     end
   elseif event == "TRAINER_SHOW" then
-    if IsTradeskillTrainer and IsTradeskillTrainer() then return end
-    atTrainer = true
-    buildFrame()
-    frame.sub:SetText("|cffffd100" .. (UnitName("npc") or "") .. "|r")
-    if SetPortraitTexture then SetPortraitTexture(frame.portrait, "npc") end
-    -- show every service category in tab 2
-    if SetTrainerServiceTypeFilter then
-      SetTrainerServiceTypeFilter("available", 1)
-      SetTrainerServiceTypeFilter("unavailable", 1)
-      SetTrainerServiceTypeFilter("used", 1)
-    end
-    parkNative(); frame:Show(); rpc("REQ")
-    rebuildServices(); render()
+    -- NEUTERED (2026-07-17): skill-leveling reverted to vanilla. Do NOT hijack the
+    -- trainer. Let Blizzard's native ClassTrainerFrame show so ranks are bought the
+    -- normal way. (parkNative / custom frame / rpc("REQ") all skipped.)
+    return
   elseif event == "TRAINER_UPDATE" then
     if atTrainer then rebuildServices(); if frame and frame:IsShown() then render() end end
   elseif event == "TRAINER_CLOSED" then
@@ -652,10 +643,6 @@ end)
 SLASH_SKILLTRAINER1 = "/skilltrainer"
 SLASH_SKILLTRAINER2 = "/str"
 SlashCmdList["SKILLTRAINER"] = function()
-  buildFrame()
-  if frame:IsShown() then frame:Hide()
-  else
-    if SetPortraitTexture then SetPortraitTexture(frame.portrait, "player") end
-    frame.sub:SetText(""); setMode("levels"); frame:Show(); rpc("REQ"); render()
-  end
+  -- NEUTERED (2026-07-17): skill-leveling reverted to vanilla; the custom window is retired.
+  DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99SkillTrainerUI|r is disabled - visit your class trainer to buy ranks the normal way.")
 end

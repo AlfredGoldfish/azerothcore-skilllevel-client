@@ -609,7 +609,12 @@ local function augmentSpellTooltip(tt)
   end
   tt:Show()   -- grow the tooltip to include the reserved row (harmless if async)
 end
-GameTooltip:HookScript("OnTooltipSetSpell", augmentSpellTooltip)
+-- REVERTED TO VANILLA (2026-07-17): spell tooltips render natively. The
+-- augmentSpellTooltip rewrite above (Rank -> "Skill Level N", baked-in damage
+-- scaling, "% from level spikes", and the XP bar) is left defined but NO LONGER
+-- hooked, so it never fires. The talent-overload tooltip (GameTooltip.SetTalent)
+-- and the item-affix tooltips (SkillLevelUI_Affix.lua) are separate hooks, kept.
+-- GameTooltip:HookScript("OnTooltipSetSpell", augmentSpellTooltip)
 
 --================================= panel ===================================--
 local panel
@@ -851,8 +856,8 @@ if type(GameTooltip.SetTalent) == "function" and not _G.SkillLevelUI_TalentTipHo
       local txt = fs and fs:GetText()
       if txt then
         -- Grow effect values to match EXACTLY what the server applies (universal mechanism):
-        --   grown = base * (1 + overload * OVERLOAD_GROWTH)   -- GROWTH must match TalentUncap.cpp (0.20)
-        local GROWTH = 0.20
+        --   grown = base * (1 + overload * OVERLOAD_GROWTH)   -- GROWTH must match TalentUncap.cpp (0.01)
+        local GROWTH = 0.01
         local function grow(num) return tostring(math.floor(tonumber(num) * (1 + ov * GROWTH) + 0.5)) end
         if not didRank and OVERLOADABLE[id] and txt:find("Rank%s") then
           -- "Rank X/Y" -> "Rank <total>" (drop the /max) for OVERLOADABLE talents only;
@@ -943,26 +948,12 @@ end)
 -- ToggleTalentFrame to bypass the gate below 10, driving the load-on-demand
 -- PlayerTalentFrame directly. At 10+ we defer to Blizzard's original behaviour.
 -- (The trees render even with 0 points; our custom talents use .talent in chat.)
-do
-  local orig = ToggleTalentFrame
-  if type(orig) == "function" then
-    ToggleTalentFrame = function(...)
-      if (UnitLevel("player") or 0) >= 10 then
-        return orig(...)                         -- normal behaviour at level 10+
-      end
-      if not PlayerTalentFrame and UIParentLoadAddOn then
-        UIParentLoadAddOn("Blizzard_TalentUI")   -- talent UI is load-on-demand
-      end
-      if PlayerTalentFrame then
-        if PlayerTalentFrame:IsShown() then HideUIPanel(PlayerTalentFrame)
-        else ShowUIPanel(PlayerTalentFrame) end
-      end
-    end
-  end
-end
+-- REVERTED TO VANILLA (2026-07-17): the ToggleTalentFrame override that opened
+-- the talent window below level 10 was removed. Native gating is restored (the
+-- frame is locked until level 10). The talent-OVERLOAD click handler + rank
+-- display are installed elsewhere (refreshTalentOverlays / tryHookTalentUI /
+-- olEv) and are unaffected by this removal.
 
-if type(hooksecurefunc) == "function" then
-  hooksecurefunc("UpdateMicroButtons", function()
-    if TalentMicroButton then TalentMicroButton:Enable() end
-  end)
-end
+-- REVERTED TO VANILLA (2026-07-17): the UpdateMicroButtons hook that force-enabled
+-- the Talent micro-button below level 10 was removed, so the button is natively
+-- disabled until level 10.
