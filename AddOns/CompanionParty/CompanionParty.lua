@@ -13,6 +13,7 @@
     * addon RPC (prefix COMPPTY) -> party_companions.lua (event 30):
         C:<race>:<class>:<name>:<gender>  create   I:<name> invite   D:<name> dismiss
         X dismiss-all      L request roster -> reply "R|name,lvl,cls,online;..."
+        B deposit loot: out companions dump loot into the guild bank -> ack "B|<total>"
     * spec change is a native bot whisper: /w <companion> talents spec <name>
 
   Open with /cp  (or /companion).  Install: copy this folder to
@@ -501,6 +502,7 @@ local BAR_BTNS = {
   { t="Come",   tip="Teleport companions to you",                   fn=function() cmdAll("summon") end },
   { t="Defend", tip="Everyone steps out of ground AoE",             fn=function() cmdAll("co +avoid aoe") end },
   { t="Loot",   tip="Everyone loots nearby",                        fn=function() cmdAll("add all loot") end },
+  { t="Deposit",tip="Companions dump their loot into the guild bank (works anywhere)", fn=function() rpc("B") end },
   { t="Rez",    tip="Revive fallen companions",                     fn=function() cmdAll("revive") end },
 }
 
@@ -564,6 +566,9 @@ local function onMessage(message)
     else roster[#roster + 1] = { name = jline, isJournal = true } end
     return
   end
+  -- Deposit ack: per-companion detail already arrives as system chat; this is the total.
+  local dep = message:match("^B|(%d+)$")
+  if dep then cprint("Deposited " .. dep .. " item(s) into the guild bank.") return end
   local fcls, body = message:match("^R|(%d+)|(.*)$")
   if not fcls then return end
   roster = {}
